@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 
@@ -12,19 +13,30 @@ import (
 )
 
 func main() {
-	// Load configuration
-	cfg := &config.MQConfig{
-		QueueManager:   "MQQM1",
-		Channel:        "APP1.SVRCONN",
-		ConnectionName: "127.0.0.1(5200)",
+	// Parse command line flags
+	var configPath = flag.String("config", "configs/default.yaml", "Configuration file path")
+	flag.Parse()
+
+	// Load configuration from file
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load configuration from %s: %v", *configPath, err)
 	}
 
 	// Create logger
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
+	fmt.Printf("=== IBM MQ PCF Data Dumper ===\n")
+	fmt.Printf("Configuration loaded from: %s\n", *configPath)
+	fmt.Printf("Queue Manager: %s\n", cfg.MQ.QueueManager)
+	fmt.Printf("Connection: %s via %s\n", cfg.MQ.ConnectionName, cfg.MQ.Channel)
+	fmt.Printf("Statistics Queue: %s\n", cfg.Collector.StatsQueue)
+	fmt.Printf("Accounting Queue: %s\n", cfg.Collector.AccountingQueue)
+	fmt.Printf("\n")
+
 	// Create MQ client
-	client := mqclient.NewMQClient(cfg, logger)
+	client := mqclient.NewMQClient(&cfg.MQ, logger)
 
 	// Connect
 	if err := client.Connect(); err != nil {
@@ -32,15 +44,13 @@ func main() {
 	}
 	defer client.Disconnect()
 
-	// Open queues
-	if err := client.OpenStatsQueue("SYSTEM.ADMIN.STATISTICS.QUEUE"); err != nil {
-		log.Printf("Failed to open statistics queue: %v", err)
+	// Open queues using configuration
+	if err := client.OpenStatsQueue(cfg.Collector.StatsQueue); err != nil {
+		log.Printf("Failed to open statistics queue %s: %v", cfg.Collector.StatsQueue, err)
 	}
-	if err := client.OpenAccountingQueue("SYSTEM.ADMIN.ACCOUNTING.QUEUE"); err != nil {
-		log.Printf("Failed to open accounting queue: %v", err)
+	if err := client.OpenAccountingQueue(cfg.Collector.AccountingQueue); err != nil {
+		log.Printf("Failed to open accounting queue %s: %v", cfg.Collector.AccountingQueue, err)
 	}
-
-	fmt.Println("=== IBM MQ PCF Data Dumper ===")
 
 	// Get accounting messages
 	fmt.Println("\n--- ACCOUNTING MESSAGES ---")
