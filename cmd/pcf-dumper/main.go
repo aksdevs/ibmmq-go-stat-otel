@@ -13,18 +13,14 @@ import (
 )
 
 func main() {
-	// Command line flags
-	var configFile string
-	flag.StringVar(&configFile, "c", "configs/default.yaml", "Configuration file path")
+	// Parse command line flags
+	var configPath = flag.String("config", "configs/default.yaml", "Configuration file path")
 	flag.Parse()
 
-	fmt.Println("=== IBM MQ PCF Data Dumper ===")
-	fmt.Printf("Configuration loaded from: %s\n", configFile)
-
-	// Load configuration
-	cfg, err := config.LoadConfig(configFile)
+	// Load configuration from file
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		log.Fatalf("Failed to load configuration from %s: %v", *configPath, err)
 	}
 
 	// Validate configuration
@@ -42,7 +38,15 @@ func main() {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
-	// Create MQ client using the loaded configuration
+	fmt.Printf("=== IBM MQ PCF Data Dumper ===\n")
+	fmt.Printf("Configuration loaded from: %s\n", *configPath)
+	fmt.Printf("Queue Manager: %s\n", cfg.MQ.QueueManager)
+	fmt.Printf("Connection: %s via %s\n", cfg.MQ.ConnectionName, cfg.MQ.Channel)
+	fmt.Printf("Statistics Queue: %s\n", cfg.Collector.StatsQueue)
+	fmt.Printf("Accounting Queue: %s\n", cfg.Collector.AccountingQueue)
+	fmt.Printf("\n")
+
+	// Create MQ client
 	client := mqclient.NewMQClient(&cfg.MQ, logger)
 
 	// Connect
@@ -53,10 +57,10 @@ func main() {
 
 	// Open queues using configuration
 	if err := client.OpenStatsQueue(cfg.Collector.StatsQueue); err != nil {
-		log.Printf("Failed to open statistics queue: %v", err)
+		log.Printf("Failed to open statistics queue %s: %v", cfg.Collector.StatsQueue, err)
 	}
 	if err := client.OpenAccountingQueue(cfg.Collector.AccountingQueue); err != nil {
-		log.Printf("Failed to open accounting queue: %v", err)
+		log.Printf("Failed to open accounting queue %s: %v", cfg.Collector.AccountingQueue, err)
 	}
 
 	// Get accounting messages

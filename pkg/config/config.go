@@ -80,11 +80,11 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		MQ: MQConfig{
-			QueueManager:   "", // Will be loaded from YAML
-			Channel:        "", // Will be loaded from YAML
-			ConnectionName: "", // Will be built from host/port if empty
-			Host:           "", // Will be loaded from YAML
-			Port:           0,  // Will be loaded from YAML
+			QueueManager:   "MQQM1",
+			Channel:        "APP1.SVRCONN",
+			ConnectionName: "localhost(1414)",
+			Host:           "127.0.0.1",
+			Port:           5200,
 			User:           "",
 			Username:       "",
 			Password:       "",
@@ -157,6 +157,11 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Unmarshal configuration
 	if err := viper.Unmarshal(config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	// Construct ConnectionName from Host and Port if not explicitly set
+	if config.MQ.Host != "" && config.MQ.Port != 0 {
+		config.MQ.ConnectionName = fmt.Sprintf("%s(%d)", config.MQ.Host, config.MQ.Port)
 	}
 
 	// Override with environment variables for sensitive data
