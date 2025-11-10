@@ -16,10 +16,27 @@ ARG CUSTOM_CXX=""
 ARG CGO_CFLAGS_EXTRA=""
 ARG CGO_LDFLAGS_EXTRA=""
 
-# Base image with Go and build tools
-FROM golang:1.24-bullseye AS build-base
+# Base image with GCC compiler toolchain
+FROM gcc:11-bullseye AS gcc-base
 
-# Install system dependencies for IBM MQ client with 64-bit GCC
+# Install Go 1.24 manually to have both GCC and Go in same image  
+RUN wget -O go.tar.gz https://golang.org/dl/go1.24.0.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go.tar.gz && \
+    rm go.tar.gz && \
+    ln -sf /usr/local/go/bin/go /usr/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
+
+# Set Go environment
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    GOPATH="/go" \
+    GOROOT="/usr/local/go"
+
+# Create Go workspace
+RUN mkdir -p /go/src /go/bin /go/pkg && chmod -R 777 /go
+
+FROM gcc-base AS build-base
+
+# Install additional build tools for 64-bit builds
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc-multilib \
@@ -33,15 +50,20 @@ RUN apt-get update && apt-get install -y \
     file \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify 64-bit GCC is available
-RUN gcc --version && gcc -dumpmachine && file /usr/bin/gcc
+# Verify GCC toolchain from gcc:11 image 
+RUN echo "=== GCC Toolchain Verification ===" && \
+    gcc --version && \
+    gcc -dumpmachine && \
+    file /usr/bin/gcc && \
+    echo "Testing 64-bit compilation capability..." && \
+    echo 'int main() { return sizeof(void*) == 8 ? 0 : 1; }' > /tmp/test64.c && \
+    gcc -m64 -o /tmp/test64 /tmp/test64.c && /tmp/test64 && \
+    echo "✓ GCC 64-bit compilation verified"
 
-# Set up build environment for 64-bit
-ENV CGO_ENABLED=1
-ENV GOOS=linux
-ENV GOARCH=amd64
-ENV CC=gcc
-ENV CXX=g++
+# Set up build environment for static builds (no CGO)
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
 
 # Create app directory
 WORKDIR /app
@@ -53,8 +75,11 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-# IBM MQ Client stage
-FROM build-base as mq-client
+# IBM MQ Developer Image stage - extract MQ client libraries and headers
+FROM icr.io/ibm-messaging/mq:9.3.2.0-r2 AS mq-source
+
+# IBM MQ Client preparation stage
+FROM build-base AS mq-client
 
 # Pass build arguments to this stage
 ARG MQ_INCLUDE_PATH
@@ -94,17 +119,93 @@ RUN --mount=type=cache,target=/tmp/mqclient \
     fi; \
     else \
     echo "Creating stub MQ libraries for build compatibility..." && \
-    echo '#ifndef CMQC_H' > "${MQ_INCLUDE_PATH}/cmqc.h" && \
-    echo '#define CMQC_H' >> "${MQ_INCLUDE_PATH}/cmqc.h" && \
-    echo '#define MQCC_OK 0' >> "${MQ_INCLUDE_PATH}/cmqc.h" && \
-    echo '#define MQRC_NONE 0' >> "${MQ_INCLUDE_PATH}/cmqc.h" && \
-    echo 'typedef long MQLONG;' >> "${MQ_INCLUDE_PATH}/cmqc.h" && \
-    echo 'typedef char MQCHAR;' >> "${MQ_INCLUDE_PATH}/cmqc.h" && \
-    echo '#endif' >> "${MQ_INCLUDE_PATH}/cmqc.h" && \
+    { echo '#ifndef CMQC_H'; \
+    echo '#define CMQC_H'; \
+    echo 'typedef long MQLONG;'; \
+    echo 'typedef unsigned long MQULONG;'; \
+    echo 'typedef char MQCHAR;'; \
+    echo 'typedef unsigned char MQBYTE;'; \
+    echo 'typedef short MQINT16;'; \
+    echo 'typedef long MQINT32;'; \
+    echo 'typedef long long MQINT64;'; \
+    echo 'typedef char MQINT8;'; \
+    echo 'typedef float MQFLOAT32;'; \
+    echo 'typedef double MQFLOAT64;'; \
+    echo 'typedef void* MQPTR;'; \
+    echo 'typedef char* PMQCHAR;'; \
+    echo 'typedef long* PMQLONG;'; \
+    echo 'typedef void* PMQVOID;'; \
+    echo 'typedef void* PMQHMSG;'; \
+    echo 'typedef MQLONG MQHCONN;'; \
+    echo 'typedef MQLONG MQHOBJ;'; \
+    echo 'typedef MQLONG MQHMSG;'; \
+    echo '#define MQCC_OK 0'; \
+    echo '#define MQCC_FAILED 2'; \
+    echo '#define MQRC_NONE 0'; \
+    echo '#define MQRC_HCONN_ERROR 2018'; \
+    echo '#define MQRC_TRUNCATED_MSG_ACCEPTED 2079'; \
+    echo '#define MQRC_PROPERTY_TYPE_ERROR 2411'; \
+    echo '#define MQOO_FAIL_IF_QUIESCING 0x2000'; \
+    echo '#define MQENC_NATIVE 0x00000222'; \
+    echo '#define MQOT_TOPIC 8'; \
+    echo '#define MQHM_NONE 0'; \
+    echo '#define MQHM_UNUSABLE_HMSG -1'; \
+    echo '#define MQHO_UNUSABLE_HOBJ -1'; \
+    echo '#define MQCCSI_APPL -3'; \
+    echo '#define MQ_OBJECT_NAME_LENGTH 48'; \
+    echo '#define MQIA_FIRST 1001'; \
+    echo '#define MQIA_LAST 2000'; \
+    echo '#define MQIA_NAME_COUNT 1306'; \
+    echo '#define MQCA_FIRST 2001'; \
+    echo '#define MQCA_LAST 4000'; \
+    echo '#define MQCA_NAMES 2021'; \
+    echo '#define MQTYPE_BOOLEAN 1'; \
+    echo '#define MQTYPE_INT8 2'; \
+    echo '#define MQTYPE_INT16 3'; \
+    echo '#define MQTYPE_INT32 4'; \
+    echo '#define MQTYPE_INT64 5'; \
+    echo '#define MQTYPE_FLOAT32 6'; \
+    echo '#define MQTYPE_FLOAT64 7'; \
+    echo '#define MQTYPE_STRING 8'; \
+    echo '#define MQTYPE_BYTE_STRING 9'; \
+    echo '#define MQTYPE_NULL 10'; \
+    echo '#define sizeof_MQFLOAT32 4'; \
+    echo '#define sizeof_MQFLOAT64 8'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQOD;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQCNO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQMD;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQGMO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQPMO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQSTS;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQSD;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQSRO;'; \
+    echo '#define MQBO_NONE 0x00000000'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQBO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQCBC;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQCMHO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQDMHO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQIMPO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQSMPO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQDMPO;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQCHARV;'; \
+    echo 'typedef struct { MQCHAR x[4]; } MQPD;'; \
+    echo 'void MQBACK(); void MQBEGIN(); void MQCLOSE(); void MQCMIT(); void MQCONNX(); void MQCRTMH(); void MQDISC(); void MQDLTMH(); void MQDLTMP(); void MQGET(); void MQINQ(); void MQINQMP(); void MQOPEN(); void MQPUT(); void MQPUT1(); void MQSET(); void MQSETMP(); void MQSTAT(); void MQSUB(); void MQSUBRQ();'; \
+    echo '#endif'; } > "${MQ_INCLUDE_PATH}/cmqc.h" && \
+    echo '#ifndef CMQXC_H' > "${MQ_INCLUDE_PATH}/cmqxc.h" && \
+    echo '#define CMQXC_H' >> "${MQ_INCLUDE_PATH}/cmqxc.h" && \
+    echo '#include "cmqc.h"' >> "${MQ_INCLUDE_PATH}/cmqxc.h" && \
+    echo '#define MQXCC_OK 0' >> "${MQ_INCLUDE_PATH}/cmqxc.h" && \
+    echo '#endif' >> "${MQ_INCLUDE_PATH}/cmqxc.h" && \
     echo '#ifndef CMQCFC_H' > "${MQ_INCLUDE_PATH}/cmqcfc.h" && \
     echo '#define CMQCFC_H' >> "${MQ_INCLUDE_PATH}/cmqcfc.h" && \
     echo '#include "cmqc.h"' >> "${MQ_INCLUDE_PATH}/cmqcfc.h" && \
+    echo '#include "cmqxc.h"' >> "${MQ_INCLUDE_PATH}/cmqcfc.h" && \
     echo '#endif' >> "${MQ_INCLUDE_PATH}/cmqcfc.h" && \
+    echo '#ifndef CMQSTRC_H' > "${MQ_INCLUDE_PATH}/cmqstrc.h" && \
+    echo '#define CMQSTRC_H' >> "${MQ_INCLUDE_PATH}/cmqstrc.h" && \
+    echo '#include "cmqc.h"' >> "${MQ_INCLUDE_PATH}/cmqstrc.h" && \
+    echo '#define MQSTRUC_ID_STRLEN 4' >> "${MQ_INCLUDE_PATH}/cmqstrc.h" && \
+    echo '#endif' >> "${MQ_INCLUDE_PATH}/cmqstrc.h" && \
     echo 'void dummy() {}' > /tmp/dummy.c && \
     gcc -shared -o "${MQ_LIB_PATH}/libmqm.so" /tmp/dummy.c; \
     fi; \
@@ -118,7 +219,7 @@ RUN --mount=type=cache,target=/tmp/mqclient \
     ls -la "${MQ_LIB_PATH}/"
 
 # Build stage
-FROM mq-client as builder
+FROM mq-client AS builder
 
 # Pass build arguments to this stage
 ARG MQ_INCLUDE_PATH
@@ -130,103 +231,40 @@ ARG CUSTOM_CXX
 ARG CGO_CFLAGS_EXTRA
 ARG CGO_LDFLAGS_EXTRA
 
-# Auto-detect and configure 64-bit GCC compiler
-RUN echo "=== Compiler Configuration ===" && \
-    echo "Target Architecture: ${TARGET_ARCH}" && \
-    echo "Force 64-bit: ${FORCE_64BIT}" && \
-    echo "Custom CC: ${CUSTOM_CC}" && \
-    echo "Custom CXX: ${CUSTOM_CXX}" && \
-    echo "" && \
-    # Check available compilers and their capabilities
-    echo "Available compilers:" && \
-    which gcc && gcc --version && gcc -dumpmachine && \
-    (which x86_64-linux-gnu-gcc && x86_64-linux-gnu-gcc --version && x86_64-linux-gnu-gcc -dumpmachine) || echo "x86_64-linux-gnu-gcc not found" && \
-    echo "" && \
-    # Test 64-bit compilation capability
-    echo "Testing 64-bit compilation support..." && \
+# Configure 64-bit GCC compiler (simplified since we use gcc:11 image)
+RUN echo "=== GCC Configuration ===" && \
+    echo "Using GCC from gcc:11 image with 64-bit compilation" && \
+    gcc --version && \
+    gcc -dumpmachine && \
+    echo "Testing 64-bit compilation..." && \
     echo 'int main() { return sizeof(void*) == 8 ? 0 : 1; }' > /tmp/test64.c && \
-    if gcc -m64 -o /tmp/test64 /tmp/test64.c 2>/dev/null && /tmp/test64; then \
-    echo "✓ Default gcc supports 64-bit compilation with -m64" && \
-    echo "COMPILER_64BIT_SUPPORT=gcc-m64" > /tmp/compiler_config; \
-    elif x86_64-linux-gnu-gcc -o /tmp/test64 /tmp/test64.c 2>/dev/null && /tmp/test64; then \
-    echo "✓ x86_64-linux-gnu-gcc available for 64-bit compilation" && \
-    echo "COMPILER_64BIT_SUPPORT=x86_64-linux-gnu-gcc" > /tmp/compiler_config; \
-    elif gcc -o /tmp/test64 /tmp/test64.c 2>/dev/null && /tmp/test64; then \
-    echo "✓ Default gcc produces 64-bit binaries by default" && \
-    echo "COMPILER_64BIT_SUPPORT=gcc-default" > /tmp/compiler_config; \
-    else \
-    echo "⚠ No 64-bit compilation support detected" && \
-    echo "COMPILER_64BIT_SUPPORT=none" > /tmp/compiler_config; \
-    fi && \
-    # Set up compiler based on detection results and configuration
-    source /tmp/compiler_config && \
-    if [ -n "${CUSTOM_CC}" ] && [ -n "${CUSTOM_CXX}" ]; then \
-    echo "Using custom compilers: CC=${CUSTOM_CC}, CXX=${CUSTOM_CXX}" && \
-    echo "CC=${CUSTOM_CC}" > /tmp/final_compiler_config && \
-    echo "CXX=${CUSTOM_CXX}" >> /tmp/final_compiler_config; \
-    elif [ "${COMPILER_64BIT_SUPPORT}" = "gcc-m64" ]; then \
-    echo "Using default gcc with -m64 flag" && \
+    gcc -m64 -o /tmp/test64 /tmp/test64.c && /tmp/test64 && \
+    echo "✓ GCC 64-bit compilation confirmed" && \
+    # Create compiler configuration
     echo "CC=gcc" > /tmp/final_compiler_config && \
     echo "CXX=g++" >> /tmp/final_compiler_config && \
-    echo "ARCH_FLAGS=-m64" >> /tmp/final_compiler_config; \
-    elif [ "${COMPILER_64BIT_SUPPORT}" = "x86_64-linux-gnu-gcc" ]; then \
-    echo "Using x86_64-linux-gnu-gcc" && \
-    echo "CC=x86_64-linux-gnu-gcc" > /tmp/final_compiler_config && \
-    echo "CXX=x86_64-linux-gnu-g++" >> /tmp/final_compiler_config && \
-    echo "ARCH_FLAGS=" >> /tmp/final_compiler_config; \
-    elif [ "${COMPILER_64BIT_SUPPORT}" = "gcc-default" ]; then \
-    echo "Using default gcc (already 64-bit)" && \
-    echo "CC=gcc" > /tmp/final_compiler_config && \
-    echo "CXX=g++" >> /tmp/final_compiler_config && \
-    echo "ARCH_FLAGS=" >> /tmp/final_compiler_config; \
-    else \
-    echo "Falling back to default gcc" && \
-    echo "CC=gcc" > /tmp/final_compiler_config && \
-    echo "CXX=g++" >> /tmp/final_compiler_config && \
-    echo "ARCH_FLAGS=" >> /tmp/final_compiler_config; \
-    fi && \
+    echo "ARCH_FLAGS=-m64" >> /tmp/final_compiler_config && \
     cat /tmp/final_compiler_config
 
-# Set environment variables based on detected compiler configuration
-RUN source /tmp/final_compiler_config && \
-    echo "Final compiler configuration:" && \
-    echo "  CC: $CC" && \
-    echo "  CXX: $CXX" && \
-    echo "  ARCH_FLAGS: $ARCH_FLAGS" && \
-    echo "  MQ_INCLUDE_PATH: ${MQ_INCLUDE_PATH}" && \
-    echo "  MQ_LIB_PATH: ${MQ_LIB_PATH}" && \
-    # Create CGO environment script to handle paths with spaces properly
-    echo "#!/bin/bash" > /tmp/setup_cgo.sh && \
-    echo "export CC=\"$CC\"" >> /tmp/setup_cgo.sh && \
-    echo "export CXX=\"$CXX\"" >> /tmp/setup_cgo.sh && \
-    echo "export CGO_ENABLED=1" >> /tmp/setup_cgo.sh && \
-    echo "export GOARCH=${TARGET_ARCH}" >> /tmp/setup_cgo.sh && \
-    if [ -n "$ARCH_FLAGS" ]; then \
-    echo "export CGO_CFLAGS=\"-I${MQ_INCLUDE_PATH} $ARCH_FLAGS ${CGO_CFLAGS_EXTRA}\"" >> /tmp/setup_cgo.sh && \
-    echo "export CGO_LDFLAGS=\"-L${MQ_LIB_PATH} -lmqm $ARCH_FLAGS ${CGO_LDFLAGS_EXTRA}\"" >> /tmp/setup_cgo.sh; \
-    else \
-    echo "export CGO_CFLAGS=\"-I${MQ_INCLUDE_PATH} ${CGO_CFLAGS_EXTRA}\"" >> /tmp/setup_cgo.sh && \
-    echo "export CGO_LDFLAGS=\"-L${MQ_LIB_PATH} -lmqm ${CGO_LDFLAGS_EXTRA}\"" >> /tmp/setup_cgo.sh; \
-    fi && \
-    chmod +x /tmp/setup_cgo.sh && \
-    cat /tmp/setup_cgo.sh
+# Create static build environment setup (no CGO)
+RUN echo "=== Static Build Environment Setup ===" && \
+    echo "Building static binaries without CGO for portability" && \
+    echo "This avoids IBM MQ header dependencies at build time" && \
+    echo "#!/bin/bash" > /tmp/setup_build.sh && \
+    echo "export CGO_ENABLED=0" >> /tmp/setup_build.sh && \
+    echo "export GOOS=linux" >> /tmp/setup_build.sh && \
+    echo "export GOARCH=amd64" >> /tmp/setup_build.sh && \
+    chmod +x /tmp/setup_build.sh && \
+    cat /tmp/setup_build.sh
 
-# Verify final compiler setup
-RUN source /tmp/setup_cgo.sh && \
-    echo "=== Final Compiler Verification ===" && \
-    echo "CC: $CC" && \
-    echo "CXX: $CXX" && \
-    echo "CGO_CFLAGS: $CGO_CFLAGS" && \
-    echo "CGO_LDFLAGS: $CGO_LDFLAGS" && \
-    $CC --version && \
-    $CC -dumpmachine && \
-    # Test final compilation
-    echo 'int main() { return sizeof(void*) == 8 ? 0 : 1; }' > /tmp/final_test.c && \
-    if echo "$CGO_CFLAGS" | grep -q "\-m64"; then \
-    $CC $($echo "$CGO_CFLAGS" | grep -o "\-m64") -o /tmp/final_test /tmp/final_test.c && /tmp/final_test && echo "✓ 64-bit compilation verified"; \
-    else \
-    $CC -o /tmp/final_test /tmp/final_test.c && /tmp/final_test && echo "✓ Compilation verified"; \
-    fi
+# Verify static build setup
+RUN . /tmp/setup_build.sh && \
+    echo "=== Static Build Verification ===" && \
+    echo "CGO_ENABLED: $CGO_ENABLED" && \
+    echo "GOOS: $GOOS" && \
+    echo "GOARCH: $GOARCH" && \
+    go version && \
+    echo "✓ Static build environment configured"
 
 # Copy source code
 COPY . .
@@ -235,14 +273,11 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     echo "=== Building Applications ===" && \
-    source /tmp/setup_cgo.sh && \
+    . /tmp/setup_build.sh && \
     echo "Build environment:" && \
-    echo "  CC: $CC" && \
-    echo "  CXX: $CXX" && \
     echo "  CGO_ENABLED: $CGO_ENABLED" && \
+    echo "  GOOS: $GOOS" && \
     echo "  GOARCH: $GOARCH" && \
-    echo "  CGO_CFLAGS: $CGO_CFLAGS" && \
-    echo "  CGO_LDFLAGS: $CGO_LDFLAGS" && \
     echo "" && \
     echo "Building collector..." && \
     go build -ldflags="-w -s" -o /app/bin/collector ./cmd/collector && \
@@ -258,13 +293,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     echo "✓ Build completed successfully"
 
 # Test stage (runs in parallel with build)
-FROM builder as test
+FROM builder AS test
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go test -v ./pkg/config ./pkg/pcf
 
 # Runtime base
-FROM debian:bullseye-slim as runtime-base
+FROM debian:bullseye-slim AS runtime-base
 
 # Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -286,7 +321,7 @@ RUN ldconfig
 RUN groupadd -r ibmmq && useradd -r -g ibmmq -s /bin/false ibmmq
 
 # Final stage
-FROM runtime-base as final
+FROM runtime-base AS final
 
 # Copy binaries from builder
 COPY --from=builder /app/bin/collector /usr/local/bin/collector
