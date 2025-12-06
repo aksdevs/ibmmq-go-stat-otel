@@ -47,6 +47,10 @@ type MetricsCollector struct {
 	queueAppMsgsReceivedGauge *prometheus.GaugeVec
 	queueAppMsgsSentGauge     *prometheus.GaugeVec
 
+	// Handle-level (application/process) metrics
+	queueHandleCountGauge   *prometheus.GaugeVec // Total handles open on queue
+	queueHandleDetailsGauge *prometheus.GaugeVec // Per-handle details (app name, user, mode)
+
 	collectionInfoGauge *prometheus.GaugeVec
 	lastCollectionTime  *prometheus.GaugeVec
 
@@ -357,6 +361,27 @@ func (c *MetricsCollector) initMetrics() {
 		[]string{"queue_manager"},
 	)
 
+	// Handle-level metrics (application/process details on queues)
+	c.queueHandleCountGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_handle_count",
+			Help:      "Total number of open handles (processes) on a queue",
+		},
+		[]string{"queue_manager", "queue_name", "handle_type"},
+	)
+
+	c.queueHandleDetailsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_handle_info",
+			Help:      "Information about open handles on a queue (application name, user, mode)",
+		},
+		[]string{"queue_manager", "queue_name", "application_name", "user_identifier", "open_mode", "handle_state"},
+	)
+
 	// Register all metrics
 	c.registry.MustRegister(
 		c.queueDepthGauge,
@@ -373,6 +398,8 @@ func (c *MetricsCollector) initMetrics() {
 		c.queueAppGetsGauge,
 		c.queueAppMsgsReceivedGauge,
 		c.queueAppMsgsSentGauge,
+		c.queueHandleCountGauge,
+		c.queueHandleDetailsGauge,
 		c.channelBytesGauge,
 		c.channelBatchesGauge,
 		c.collectionInfoGauge,
@@ -409,6 +436,9 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context) error {
 
 	// Collect and update queue-specific metrics via MQINQ
 	c.collectAndUpdateQueueMetrics()
+
+	// Collect and update handle-level metrics (application/process details)
+	c.collectAndUpdateHandleMetrics()
 
 	// Update collection timestamp and baseline metrics
 	c.setBaselineMetrics(len(statsMessages), len(accountingMessages))
@@ -514,6 +544,83 @@ func (c *MetricsCollector) collectAndUpdateQueueMetrics() {
 			"input_count":   stats.OpenInputCount,
 			"output_count":  stats.OpenOutputCount,
 		}).Debug("Updated queue metrics via MQINQ")
+	}
+}
+
+// collectAndUpdateHandleMetrics collects handle (application/process) details for monitored queues
+// Similar to: DIS QS(queue_name) TYPE(HANDLE) ALL
+func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
+	if !c.mqClient.IsConnected() {
+		c.logger.Debug("MQ client not connected, skipping handle collection")
+		return
+	}
+
+	// List of queues to monitor for handle details
+	queuesToMonitor := []string{
+		"TEST.QUEUE",
+		"SYSTEM.ADMIN.STATISTICS.QUEUE",
+		"SYSTEM.ADMIN.ACCOUNTING.QUEUE",
+	}
+
+	for _, queueName := range queuesToMonitor {
+		handles, err := c.mqClient.GetQueueHandles(queueName)
+		if err != nil {
+			c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to get queue handles")
+			continue
+		}
+
+		if len(handles) == 0 {
+			c.logger.WithField("queue_name", queueName).Debug("No open handles on queue")
+			continue
+		}
+
+		// Count handles by type
+		inputCount := int32(0)
+		outputCount := int32(0)
+
+		for _, handle := range handles {
+			if handle.OpenMode == "Input" {
+				inputCount++
+			} else if handle.OpenMode == "Output" {
+				outputCount++
+			}
+		}
+
+		// Update handle count metrics
+		if c.queueHandleCountGauge != nil {
+			c.queueHandleCountGauge.WithLabelValues(
+				c.config.MQ.QueueManager,
+				queueName,
+				"input",
+			).Set(float64(inputCount))
+
+			c.queueHandleCountGauge.WithLabelValues(
+				c.config.MQ.QueueManager,
+				queueName,
+				"output",
+			).Set(float64(outputCount))
+		}
+
+		// Update handle details metrics
+		for _, handle := range handles {
+			if c.queueHandleDetailsGauge != nil {
+				c.queueHandleDetailsGauge.WithLabelValues(
+					c.config.MQ.QueueManager,
+					queueName,
+					handle.ApplicationName,
+					handle.UserIdentifier,
+					handle.OpenMode,
+					handle.HandleState,
+				).Set(1) // Metric value is 1 to indicate handle presence
+			}
+		}
+
+		c.logger.WithFields(logrus.Fields{
+			"queue_name":     queueName,
+			"input_handles":  inputCount,
+			"output_handles": outputCount,
+			"total_handles":  len(handles),
+		}).Debug("Updated queue handle metrics")
 	}
 }
 
