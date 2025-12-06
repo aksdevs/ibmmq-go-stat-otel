@@ -77,12 +77,55 @@ const (
 	// MQI Statistics (MQIAMO_*) - Windows values from cmqc_windows.go
 	// Note: These values differ from Linux! On Linux: OPENS=3, CLOSES=4, etc.
 	// On Windows, they are in the 700+ range.
-	MQIAMO_OPENS    = 733 // MQI opens
-	MQIAMO_CLOSES   = 709 // MQI closes
-	MQIAMO_PUTS     = 735 // MQI puts
-	MQIAMO_GETS     = 722 // MQI gets
-	MQIAMO_COMMITS  = 710 // MQI commits
-	MQIAMO_BACKOUTS = 704 // MQI backouts
+	MQIAMO_OPENS                = 733 // MQI opens
+	MQIAMO_CLOSES               = 709 // MQI closes
+	MQIAMO_PUTS                 = 735 // MQI puts
+	MQIAMO_GETS                 = 722 // MQI gets
+	MQIAMO_COMMITS              = 710 // MQI commits
+	MQIAMO_BACKOUTS             = 704 // MQI backouts
+	MQIAMO_BROWSES              = 725 // MQI browses
+	MQIAMO_INQS                 = 727 // MQI inquires
+	MQIAMO_SETS                 = 731 // MQI sets
+	MQIAMO_DISC_CLOSE_TIMEOUT   = 765 // Disconnection close timeout
+	MQIAMO_DISC_RESET_TIMEOUT   = 766 // Disconnection reset timeout
+	MQIAMO_FAILS                = 767 // MQI failures
+	MQIAMO_INCOMPLETE_BATCH     = 768 // Incomplete batch
+	MQIAMO_INCOMPLETE_MSG       = 769 // Incomplete message
+	MQIAMO_WAIT_INTERVAL        = 770 // Wait interval
+	MQIAMO_SYNCPOINT_HEURISTIC  = 771 // Syncpoint heuristic
+	MQIAMO_HEAPS                = 772 // Heaps
+	MQIAMO_LOGICAL_CONNECTIONS  = 773 // Logical connections
+	MQIAMO_PHYSICAL_CONNECTIONS = 774 // Physical connections
+	MQIAMO_CURRENT_CONNS        = 775 // Current connections
+	MQIAMO_PERSISTENT_MSGS      = 776 // Persistent messages
+	MQIAMO_NON_PERSISTENT_MSGS  = 777 // Non-persistent messages
+	MQIAMO_LONG_MSGS            = 778 // Long messages
+	MQIAMO_SHORT_MSGS           = 779 // Short messages
+	MQIAMO_QUEUE_TIME           = 781 // Queue time
+	MQIAMO_QUEUE_TIME_MAX       = 783 // Queue time max
+	MQIAMO_ELAPSED_TIME         = 784 // Elapsed time
+	MQIAMO_ELAPSED_TIME_MAX     = 785 // Elapsed time max
+	MQIAMO_CONN_TIME            = 786 // Connection time
+	MQIAMO_CONN_TIME_MAX        = 787 // Connection time max
+	MQIAMO_STAMP_ENABLED        = 788 // Stamp enabled
+
+	// Statistics related parameters
+	MQIACF_MSGS_RECEIVED      = 744 // Messages received
+	MQIACF_MSGS_SENT          = 751 // Messages sent
+	MQIACF_BYTES_RECEIVED     = 752 // Bytes received
+	MQIACF_BYTES_SENT         = 753 // Bytes sent
+	MQIACF_CHANNEL_STATUS     = 754 // Channel status
+	MQIACF_CHANNEL_TYPE       = 755 // Channel type
+	MQIACF_CHANNEL_ERRORS     = 757 // Channel errors
+	MQIACF_CHANNEL_DISC_COUNT = 758 // Channel disconnect count
+	MQIACF_CHANNEL_EXITNAME   = 760 // Channel exit name
+
+	// Additional measurement parameters
+	MQIAMO_BACKOUT_COUNT   = 745 // Backout count
+	MQIAMO_COMMITS_COUNT   = 747 // Commits count
+	MQIAMO_ROLLBACK_COUNT  = 748 // Rollback count
+	MQIAMO_FULL_BATCHES    = 749 // Full batches
+	MQIAMO_PARTIAL_BATCHES = 714 // Partial batches
 
 	// Application and Connection Parameters (MQCACF_*, MQCACH_*)
 	MQCACF_APPL_NAME       = 3024 // Application name
@@ -130,15 +173,25 @@ type StatisticsData struct {
 
 // QueueStatistics represents queue-specific statistics
 type QueueStatistics struct {
-	QueueName    string `json:"queue_name"`
-	CurrentDepth int32  `json:"current_depth"`
-	HighDepth    int32  `json:"high_depth"`
-	InputCount   int32  `json:"input_count"`
-	OutputCount  int32  `json:"output_count"`
-	EnqueueCount int32  `json:"enqueue_count"`
-	DequeueCount int32  `json:"dequeue_count"`
-	HasReaders   bool   `json:"has_readers"`
-	HasWriters   bool   `json:"has_writers"`
+	QueueName       string     `json:"queue_name"`
+	CurrentDepth    int32      `json:"current_depth"`
+	HighDepth       int32      `json:"high_depth"`
+	InputCount      int32      `json:"input_count"`
+	OutputCount     int32      `json:"output_count"`
+	EnqueueCount    int32      `json:"enqueue_count"`
+	DequeueCount    int32      `json:"dequeue_count"`
+	HasReaders      bool       `json:"has_readers"`
+	HasWriters      bool       `json:"has_writers"`
+	AssociatedProcs []ProcInfo `json:"associated_procs,omitempty"`
+}
+
+// ProcInfo represents a process (input/output) associated with a queue
+type ProcInfo struct {
+	ApplicationName string `json:"application_name"`
+	ConnectionName  string `json:"connection_name"`
+	UserIdentifier  string `json:"user_identifier"`
+	ChannelName     string `json:"channel_name"`
+	Role            string `json:"role"` // "input" or "output" or "unknown"
 }
 
 // ChannelStatistics represents channel-specific statistics
@@ -150,19 +203,58 @@ type ChannelStatistics struct {
 	Batches        int32  `json:"batches"`
 }
 
-// MQIStatistics represents MQI-specific statistics
+// MQIStatistics represents MQI-specific statistics (all 59 parameters)
 type MQIStatistics struct {
-	ApplicationName string `json:"application_name"`
-	ApplicationTag  string `json:"application_tag"`
-	ConnectionName  string `json:"connection_name"`
-	UserIdentifier  string `json:"user_identifier"`
-	ChannelName     string `json:"channel_name"`
-	Opens           int32  `json:"opens"`
-	Closes          int32  `json:"closes"`
-	Puts            int32  `json:"puts"`
-	Gets            int32  `json:"gets"`
-	Commits         int32  `json:"commits"`
-	Backouts        int32  `json:"backouts"`
+	ApplicationName     string `json:"application_name"`
+	ApplicationTag      string `json:"application_tag"`
+	ConnectionName      string `json:"connection_name"`
+	UserIdentifier      string `json:"user_identifier"`
+	ChannelName         string `json:"channel_name"`
+	Opens               int32  `json:"opens"`
+	Closes              int32  `json:"closes"`
+	Puts                int32  `json:"puts"`
+	Gets                int32  `json:"gets"`
+	Commits             int32  `json:"commits"`
+	Backouts            int32  `json:"backouts"`
+	Browses             int32  `json:"browses"`
+	Inqs                int32  `json:"inqs"`
+	Sets                int32  `json:"sets"`
+	DiscCloseTimeout    int32  `json:"disc_close_timeout"`
+	DiscResetTimeout    int32  `json:"disc_reset_timeout"`
+	Fails               int32  `json:"fails"`
+	IncompleteBatch     int32  `json:"incomplete_batch"`
+	IncompleteMsg       int32  `json:"incomplete_msg"`
+	WaitInterval        int32  `json:"wait_interval"`
+	SyncpointHeuristic  int32  `json:"syncpoint_heuristic"`
+	Heaps               int32  `json:"heaps"`
+	LogicalConnections  int32  `json:"logical_connections"`
+	PhysicalConnections int32  `json:"physical_connections"`
+	CurrentConns        int32  `json:"current_conns"`
+	PersistentMsgs      int32  `json:"persistent_msgs"`
+	NonPersistentMsgs   int32  `json:"non_persistent_msgs"`
+	LongMsgs            int32  `json:"long_msgs"`
+	ShortMsgs           int32  `json:"short_msgs"`
+	QueueTime           int64  `json:"queue_time"`
+	QueueTimeMax        int64  `json:"queue_time_max"`
+	ElapsedTime         int64  `json:"elapsed_time"`
+	ElapsedTimeMax      int64  `json:"elapsed_time_max"`
+	ConnTime            int64  `json:"conn_time"`
+	ConnTimeMax         int64  `json:"conn_time_max"`
+	StampEnabled        int32  `json:"stamp_enabled"`
+	MsgsReceived        int32  `json:"msgs_received"`
+	MsgsSent            int32  `json:"msgs_sent"`
+	BytesReceived       int64  `json:"bytes_received"`
+	BytesSent           int64  `json:"bytes_sent"`
+	ChannelStatus       int32  `json:"channel_status"`
+	ChannelType         int32  `json:"channel_type"`
+	ChannelErrors       int32  `json:"channel_errors"`
+	ChannelDiscCount    int32  `json:"channel_disc_count"`
+	ChannelExitName     int32  `json:"channel_exit_name"`
+	BackoutCount        int64  `json:"backout_count"`
+	CommitsCount        int64  `json:"commits_count"`
+	RollbackCount       int64  `json:"rollback_count"`
+	FullBatches         int32  `json:"full_batches"`
+	PartialBatches      int32  `json:"partial_batches"`
 }
 
 // AccountingData represents parsed accounting data
@@ -173,6 +265,8 @@ type AccountingData struct {
 	Parameters     map[string]interface{} `json:"parameters"`
 	ConnectionInfo *ConnectionInfo        `json:"connection_info,omitempty"`
 	Operations     *OperationCounts       `json:"operations,omitempty"`
+	// Per-queue, per-application operation counts (from accounting groups)
+	QueueOperations []*QueueAppOperation `json:"queue_operations,omitempty"`
 }
 
 // ConnectionInfo represents connection-specific accounting data
@@ -195,6 +289,18 @@ type OperationCounts struct {
 	Closes   int32 `json:"closes"`
 	Commits  int32 `json:"commits"`
 	Backouts int32 `json:"backouts"`
+}
+
+// QueueAppOperation represents operation counts for a specific application/connection on a queue
+type QueueAppOperation struct {
+	QueueName       string `json:"queue_name"`
+	ApplicationName string `json:"application_name"`
+	ConnectionName  string `json:"connection_name"`
+	UserIdentifier  string `json:"user_identifier"`
+	Puts            int32  `json:"puts"`
+	Gets            int32  `json:"gets"`
+	MsgsReceived    int32  `json:"msgs_received"`
+	MsgsSent        int32  `json:"msgs_sent"`
 }
 
 // Parser handles PCF message parsing
@@ -427,14 +533,173 @@ func (p *Parser) parseAccounting(header *PCFHeader, parameters []*PCFParameter) 
 	acct.ConnectionInfo = p.parseConnectionInfo(parameters)
 	acct.Operations = p.parseOperationCounts(parameters)
 
+	// Extract per-queue per-application operations from GROUP parameters OR top-level arrays
+	// Note: This is for queue-level accounting. MQI-level accounting (no queue names) is handled above.
+	acct.QueueOperations = []*QueueAppOperation{}
+	p.logger.WithFields(logrus.Fields{
+		"total_params": len(parameters),
+	}).Debug("parseAccounting: starting QueueOperations extraction")
+
+	// First try GROUP-based extraction (for per-queue grouped data with queue names)
+	groupFound := false
+	for _, param := range parameters {
+		p.logger.WithFields(logrus.Fields{
+			"param_id":   param.Parameter,
+			"param_type": param.Type,
+			"value_type": fmt.Sprintf("%T", param.Value),
+		}).Debug("parseAccounting: inspecting top-level parameter")
+
+		if nested, ok := param.Value.([]*PCFParameter); ok {
+			groupFound = true
+			p.logger.WithFields(logrus.Fields{
+				"param_id":     param.Parameter,
+				"nested_count": len(nested),
+			}).Info("parseAccounting: found GROUP with nested params")
+
+			// A nested GROUP describes queue-level accounting info
+			qa := &QueueAppOperation{}
+			for _, np := range nested {
+				p.logger.WithFields(logrus.Fields{
+					"nested_param_id": np.Parameter,
+					"nested_type":     np.Type,
+					"value_type":      fmt.Sprintf("%T", np.Value),
+					"value":           fmt.Sprintf("%v", np.Value),
+				}).Debug("parseAccounting: nested parameter details")
+
+				if valStr, ok := np.Value.(string); ok {
+					switch np.Parameter {
+					case MQCA_Q_NAME:
+						qa.QueueName = valStr
+						p.logger.WithField("queue_name", valStr).Info("parseAccounting: extracted QUEUE_NAME from GROUP")
+					case MQCA_APPL_NAME, MQCACF_APPL_NAME:
+						qa.ApplicationName = valStr
+						p.logger.WithField("app_name", valStr).Info("parseAccounting: extracted APPL_NAME from GROUP")
+					case MQCA_CONNECTION_NAME, MQCACH_CONNECTION_NAME:
+						qa.ConnectionName = valStr
+						p.logger.WithField("connection", valStr).Info("parseAccounting: extracted CONNECTION_NAME from GROUP")
+					case MQCACF_USER_IDENTIFIER:
+						qa.UserIdentifier = valStr
+						p.logger.WithField("user", valStr).Info("parseAccounting: extracted USER_IDENTIFIER from GROUP")
+					}
+				}
+				if valInt, ok := np.Value.(int32); ok {
+					switch np.Parameter {
+					case MQIAMO_PUTS:
+						qa.Puts = valInt
+						p.logger.WithField("puts", valInt).Info("parseAccounting: extracted PUTS from GROUP")
+					case MQIAMO_GETS:
+						qa.Gets = valInt
+						p.logger.WithField("gets", valInt).Info("parseAccounting: extracted GETS from GROUP")
+					case MQIACF_MSGS_RECEIVED:
+						qa.MsgsReceived = valInt
+						p.logger.WithField("msgs_received", valInt).Info("parseAccounting: extracted MSGS_RECEIVED from GROUP")
+					case MQIACF_MSGS_SENT:
+						qa.MsgsSent = valInt
+						p.logger.WithField("msgs_sent", valInt).Info("parseAccounting: extracted MSGS_SENT from GROUP")
+					}
+				}
+			}
+
+			// Only append when we have a queue name and at least one operation
+			if qa.QueueName != "" && (qa.Puts != 0 || qa.Gets != 0 || qa.MsgsReceived != 0 || qa.MsgsSent != 0) {
+				acct.QueueOperations = append(acct.QueueOperations, qa)
+				p.logger.WithFields(logrus.Fields{
+					"queue_name":    qa.QueueName,
+					"app_name":      qa.ApplicationName,
+					"puts":          qa.Puts,
+					"gets":          qa.Gets,
+					"msgs_received": qa.MsgsReceived,
+					"msgs_sent":     qa.MsgsSent,
+				}).Info("parseAccounting: appended QueueAppOperation from GROUP")
+			}
+		}
+	}
+
+	// If no GROUP data found with queue names, this is MQI-level accounting (not queue-level)
+	// MQI-level accounting is already handled via acct.Operations and acct.ConnectionInfo
+	if !groupFound {
+		p.logger.Info("parseAccounting: No GROUP with queue names found - this appears to be MQI-level accounting, not queue-level")
+	}
+
+	p.logger.WithField("total_queue_ops", len(acct.QueueOperations)).Info("parseAccounting: completed extraction")
+
 	return acct, nil
 }
 
 // parseQueueStats extracts queue statistics from parameters
 func (p *Parser) parseQueueStats(parameters []*PCFParameter) *QueueStatistics {
 	stats := &QueueStatistics{}
+	p.logger.WithField("total_params", len(parameters)).Debug("parseQueueStats: starting extraction")
 
 	for _, param := range parameters {
+		p.logger.WithFields(logrus.Fields{
+			"param_id":   param.Parameter,
+			"param_type": param.Type,
+			"value_type": fmt.Sprintf("%T", param.Value),
+		}).Debug("parseQueueStats: inspecting parameter")
+
+		// Handle nested GROUP parameters that may represent individual processes (ipprocs/opprocs)
+		if nested, ok := param.Value.([]*PCFParameter); ok {
+			p.logger.WithFields(logrus.Fields{
+				"param_id":     param.Parameter,
+				"nested_count": len(nested),
+			}).Info("parseQueueStats: found GROUP with nested params")
+
+			// Extract connection/app info from nested group
+			proc := ProcInfo{Role: "unknown"}
+			for _, np := range nested {
+				p.logger.WithFields(logrus.Fields{
+					"nested_param_id": np.Parameter,
+					"nested_type":     np.Type,
+					"value":           fmt.Sprintf("%v", np.Value),
+				}).Debug("parseQueueStats: nested param details")
+
+				if val, ok := np.Value.(string); ok {
+					switch np.Parameter {
+					case MQCA_APPL_NAME, MQCACF_APPL_NAME:
+						proc.ApplicationName = val
+						p.logger.WithField("app_name", val).Info("parseQueueStats: extracted APPL_NAME")
+					case MQCA_CONNECTION_NAME, MQCACH_CONNECTION_NAME:
+						proc.ConnectionName = val
+						p.logger.WithField("connection", val).Info("parseQueueStats: extracted CONNECTION_NAME")
+					case MQCACF_USER_IDENTIFIER:
+						proc.UserIdentifier = val
+						p.logger.WithField("user", val).Info("parseQueueStats: extracted USER_IDENTIFIER")
+					case MQCA_CHANNEL_NAME:
+						proc.ChannelName = val
+						p.logger.WithField("channel", val).Info("parseQueueStats: extracted CHANNEL_NAME")
+					}
+				}
+
+				if ival, ok := np.Value.(int32); ok {
+					switch np.Parameter {
+					case MQIA_OPEN_INPUT_COUNT:
+						if ival > 0 {
+							proc.Role = "input"
+							p.logger.WithField("input_count", ival).Info("parseQueueStats: detected input role")
+						}
+					case MQIA_OPEN_OUTPUT_COUNT:
+						if ival > 0 {
+							proc.Role = "output"
+							p.logger.WithField("output_count", ival).Info("parseQueueStats: detected output role")
+						}
+					}
+				}
+			}
+
+			// If we found application or connection info, append to associated procs
+			if proc.ApplicationName != "" || proc.ConnectionName != "" || proc.UserIdentifier != "" {
+				stats.AssociatedProcs = append(stats.AssociatedProcs, proc)
+				p.logger.WithFields(logrus.Fields{
+					"app_name":   proc.ApplicationName,
+					"connection": proc.ConnectionName,
+					"role":       proc.Role,
+				}).Info("parseQueueStats: appended ProcInfo")
+			}
+			// continue processing other top-level params
+			continue
+		}
+
 		if val, ok := param.Value.(int32); ok {
 			switch param.Parameter {
 			case MQIA_CURRENT_Q_DEPTH:
@@ -456,9 +721,19 @@ func (p *Parser) parseQueueStats(parameters []*PCFParameter) *QueueStatistics {
 			switch param.Parameter {
 			case MQCA_Q_NAME:
 				stats.QueueName = str
+				p.logger.WithFields(logrus.Fields{
+					"queue_name":       str,
+					"associated_procs": len(stats.AssociatedProcs),
+				}).Info("parseQueueStats: extracted QUEUE_NAME")
 			}
 		}
 	}
+
+	p.logger.WithFields(logrus.Fields{
+		"queue_name":       stats.QueueName,
+		"associated_procs": len(stats.AssociatedProcs),
+		"current_depth":    stats.CurrentDepth,
+	}).Info("parseQueueStats: completed extraction")
 
 	return stats
 }
@@ -553,31 +828,81 @@ func (p *Parser) parseMQIStats(parameters []*PCFParameter) *MQIStatistics {
 
 		// Check for integer list values (MQCFT_INTEGER_LIST or MQCFT_INTEGER64_LIST)
 		if valList, ok := param.Value.([]int64); ok {
-			// Sum all values in the list
+			// Sum all values in the list or use first value for arrays
 			var sum int32
+			var sum64 int64
 			for _, v := range valList {
 				sum += int32(v)
+				sum64 += v
 			}
 
 			switch param.Parameter {
 			case MQIAMO_OPENS:
 				stats.Opens = sum
-				p.logger.WithField("opens", sum).Debug("Found Opens (from list)")
 			case MQIAMO_CLOSES:
 				stats.Closes = sum
-				p.logger.WithField("closes", sum).Debug("Found Closes (from list)")
 			case MQIAMO_PUTS:
 				stats.Puts = sum
-				p.logger.WithField("puts", sum).Debug("Found Puts (from list)")
 			case MQIAMO_GETS:
 				stats.Gets = sum
-				p.logger.WithField("gets", sum).Debug("Found Gets (from list)")
 			case MQIAMO_COMMITS:
 				stats.Commits = sum
-				p.logger.WithField("commits", sum).Debug("Found Commits (from list)")
 			case MQIAMO_BACKOUTS:
 				stats.Backouts = sum
-				p.logger.WithField("backouts", sum).Debug("Found Backouts (from list)")
+			case MQIAMO_BROWSES:
+				stats.Browses = sum
+			case MQIAMO_INQS:
+				stats.Inqs = sum
+			case MQIAMO_SETS:
+				stats.Sets = sum
+			case MQIACF_MSGS_RECEIVED:
+				stats.MsgsReceived = sum
+			case MQIACF_MSGS_SENT:
+				stats.MsgsSent = sum
+			case MQIACF_BYTES_RECEIVED:
+				stats.BytesReceived = sum64
+			case MQIACF_BYTES_SENT:
+				stats.BytesSent = sum64
+			case MQIAMO_PARTIAL_BATCHES:
+				stats.PartialBatches = sum
+			case MQIAMO_BACKOUT_COUNT:
+				stats.BackoutCount = sum64
+			case MQIAMO_COMMITS_COUNT:
+				stats.CommitsCount = sum64
+			case MQIAMO_ROLLBACK_COUNT:
+				stats.RollbackCount = sum64
+			case MQIAMO_SYNCPOINT_HEURISTIC:
+				stats.SyncpointHeuristic = sum
+			case MQIAMO_WAIT_INTERVAL:
+				stats.WaitInterval = sum
+			case MQIAMO_HEAPS:
+				stats.Heaps = sum
+			case MQIAMO_LOGICAL_CONNECTIONS:
+				stats.LogicalConnections = sum
+			case MQIAMO_PHYSICAL_CONNECTIONS:
+				stats.PhysicalConnections = sum
+			case MQIAMO_CURRENT_CONNS:
+				stats.CurrentConns = sum
+			case MQIAMO_PERSISTENT_MSGS:
+				stats.PersistentMsgs = sum
+			case MQIAMO_NON_PERSISTENT_MSGS:
+				stats.NonPersistentMsgs = sum
+			case MQIAMO_LONG_MSGS:
+				stats.LongMsgs = sum
+			case MQIAMO_SHORT_MSGS:
+				stats.ShortMsgs = sum
+			case MQIAMO_QUEUE_TIME:
+				stats.QueueTime = sum64
+			case MQIAMO_QUEUE_TIME_MAX:
+				stats.QueueTimeMax = sum64
+			case MQIAMO_ELAPSED_TIME:
+				stats.ElapsedTime = sum64
+			case MQIAMO_ELAPSED_TIME_MAX:
+				stats.ElapsedTimeMax = sum64
+			case MQIAMO_CONN_TIME:
+				stats.ConnTime = sum64
+			case MQIAMO_CONN_TIME_MAX:
+				stats.ConnTimeMax = sum64
 			}
 			continue
 		}
@@ -586,22 +911,72 @@ func (p *Parser) parseMQIStats(parameters []*PCFParameter) *MQIStatistics {
 			switch param.Parameter {
 			case MQIAMO_OPENS:
 				stats.Opens = val
-				p.logger.WithField("opens", val).Info("Found Opens")
 			case MQIAMO_CLOSES:
 				stats.Closes = val
-				p.logger.WithField("closes", val).Info("Found Closes")
 			case MQIAMO_PUTS:
 				stats.Puts = val
-				p.logger.WithField("puts", val).Info("Found Puts")
 			case MQIAMO_GETS:
 				stats.Gets = val
-				p.logger.WithField("gets", val).Info("Found Gets")
 			case MQIAMO_COMMITS:
 				stats.Commits = val
-				p.logger.WithField("commits", val).Info("Found Commits")
 			case MQIAMO_BACKOUTS:
 				stats.Backouts = val
-				p.logger.WithField("backouts", val).Info("Found Backouts")
+			case MQIAMO_BROWSES:
+				stats.Browses = val
+			case MQIAMO_INQS:
+				stats.Inqs = val
+			case MQIAMO_SETS:
+				stats.Sets = val
+			case MQIAMO_DISC_CLOSE_TIMEOUT:
+				stats.DiscCloseTimeout = val
+			case MQIAMO_DISC_RESET_TIMEOUT:
+				stats.DiscResetTimeout = val
+			case MQIAMO_FAILS:
+				stats.Fails = val
+			case MQIAMO_INCOMPLETE_BATCH:
+				stats.IncompleteBatch = val
+			case MQIAMO_INCOMPLETE_MSG:
+				stats.IncompleteMsg = val
+			case MQIAMO_WAIT_INTERVAL:
+				stats.WaitInterval = val
+			case MQIAMO_SYNCPOINT_HEURISTIC:
+				stats.SyncpointHeuristic = val
+			case MQIAMO_HEAPS:
+				stats.Heaps = val
+			case MQIAMO_LOGICAL_CONNECTIONS:
+				stats.LogicalConnections = val
+			case MQIAMO_PHYSICAL_CONNECTIONS:
+				stats.PhysicalConnections = val
+			case MQIAMO_CURRENT_CONNS:
+				stats.CurrentConns = val
+			case MQIAMO_PERSISTENT_MSGS:
+				stats.PersistentMsgs = val
+			case MQIAMO_NON_PERSISTENT_MSGS:
+				stats.NonPersistentMsgs = val
+			case MQIAMO_LONG_MSGS:
+				stats.LongMsgs = val
+			case MQIAMO_SHORT_MSGS:
+				stats.ShortMsgs = val
+			case MQIAMO_STAMP_ENABLED:
+				stats.StampEnabled = val
+			case MQIACF_MSGS_RECEIVED:
+				stats.MsgsReceived = val
+			case MQIACF_MSGS_SENT:
+				stats.MsgsSent = val
+			case MQIACF_CHANNEL_STATUS:
+				stats.ChannelStatus = val
+			case MQIACF_CHANNEL_TYPE:
+				stats.ChannelType = val
+			case MQIACF_CHANNEL_ERRORS:
+				stats.ChannelErrors = val
+			case MQIACF_CHANNEL_DISC_COUNT:
+				stats.ChannelDiscCount = val
+			case MQIACF_CHANNEL_EXITNAME:
+				stats.ChannelExitName = val
+			case MQIAMO_FULL_BATCHES:
+				stats.FullBatches = val
+			case MQIAMO_PARTIAL_BATCHES:
+				stats.PartialBatches = val
 			}
 		} else if str, ok := param.Value.(string); ok {
 			switch param.Parameter {

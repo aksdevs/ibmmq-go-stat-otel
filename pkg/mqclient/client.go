@@ -245,6 +245,73 @@ func (c *MQClient) IsConnected() bool {
 	return c.connected
 }
 
+// QueueStats represents queue-specific statistics retrieved via MQINQ
+type QueueStats struct {
+	QueueName       string    `json:"queue_name"`
+	CurrentDepth    int32     `json:"current_depth"`
+	OpenInputCount  int32     `json:"open_input_count"`
+	OpenOutputCount int32     `json:"open_output_count"`
+	CreationTime    time.Time `json:"creation_time"`
+}
+
+// GetQueueStats retrieves queue statistics using MQINQ API
+func (c *MQClient) GetQueueStats(queueName string) (*QueueStats, error) {
+	if !c.connected {
+		return nil, fmt.Errorf("not connected to IBM MQ")
+	}
+
+	// Open the queue for inquiry
+	od := ibmmq.NewMQOD()
+	od.ObjectName = queueName
+	od.ObjectType = ibmmq.MQOT_Q
+
+	queue, err := c.qmgr.Open(od, ibmmq.MQOO_INQUIRE)
+	if err != nil {
+		c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to open queue for inquiry")
+		return nil, fmt.Errorf("failed to open queue %s: %w", queueName, err)
+	}
+	defer queue.Close(0)
+
+	// Prepare inquiry selectors - get current depth and open counts
+	selectors := []int32{
+		ibmmq.MQIA_CURRENT_Q_DEPTH,
+		ibmmq.MQIA_OPEN_INPUT_COUNT,
+		ibmmq.MQIA_OPEN_OUTPUT_COUNT,
+	}
+
+	// Inquire on the queue
+	attrs, err := queue.Inq(selectors)
+	if err != nil {
+		c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to inquire queue attributes")
+		return nil, fmt.Errorf("failed to inquire queue %s: %w", queueName, err)
+	}
+
+	// Extract values from the attributes map
+	stats := &QueueStats{
+		QueueName:    queueName,
+		CreationTime: time.Now(),
+	}
+
+	if depth, ok := attrs[ibmmq.MQIA_CURRENT_Q_DEPTH].(int32); ok {
+		stats.CurrentDepth = depth
+	}
+	if inputCount, ok := attrs[ibmmq.MQIA_OPEN_INPUT_COUNT].(int32); ok {
+		stats.OpenInputCount = inputCount
+	}
+	if outputCount, ok := attrs[ibmmq.MQIA_OPEN_OUTPUT_COUNT].(int32); ok {
+		stats.OpenOutputCount = outputCount
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"queue_name":    queueName,
+		"current_depth": stats.CurrentDepth,
+		"open_input":    stats.OpenInputCount,
+		"open_output":   stats.OpenOutputCount,
+	}).Debug("Retrieved queue stats via MQINQ")
+
+	return stats, nil
+}
+
 // MQMessage represents a message retrieved from IBM MQ
 type MQMessage struct {
 	MD   *ibmmq.MQMD

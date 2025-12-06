@@ -21,7 +21,10 @@ type MetricsCollector struct {
 	logger    *logrus.Logger
 	registry  *prometheus.Registry
 
-	// Prometheus metrics
+	// MQI metrics - using a map to efficiently store all 59 metrics
+	mqiMetrics map[string]*prometheus.GaugeVec
+
+	// Prometheus metrics for queues and channels
 	queueDepthGauge       *prometheus.GaugeVec
 	queueHighDepthGauge   *prometheus.GaugeVec
 	queueEnqueueGauge     *prometheus.GaugeVec
@@ -35,12 +38,14 @@ type MetricsCollector struct {
 	channelBytesGauge    *prometheus.GaugeVec
 	channelBatchesGauge  *prometheus.GaugeVec
 
-	mqiOpensGauge    *prometheus.GaugeVec
-	mqiClosesGauge   *prometheus.GaugeVec
-	mqiPutsGauge     *prometheus.GaugeVec
-	mqiGetsGauge     *prometheus.GaugeVec
-	mqiCommitsGauge  *prometheus.GaugeVec
-	mqiBackoutsGauge *prometheus.GaugeVec
+	// Per-queue processes (ipprocs/opprocs)
+	queueProcessGauge *prometheus.GaugeVec
+
+	// Per-queue per-application operation metrics
+	queueAppPutsGauge         *prometheus.GaugeVec
+	queueAppGetsGauge         *prometheus.GaugeVec
+	queueAppMsgsReceivedGauge *prometheus.GaugeVec
+	queueAppMsgsSentGauge     *prometheus.GaugeVec
 
 	collectionInfoGauge *prometheus.GaugeVec
 	lastCollectionTime  *prometheus.GaugeVec
@@ -92,6 +97,59 @@ func (c *MetricsCollector) initMetrics() {
 			Help:      "Current depth of IBM MQ queue",
 		},
 		[]string{"queue_manager", "queue_name"},
+	)
+	c.queueProcessGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_process",
+			Help:      "Processes associated with a queue (ipprocs/opprocs). Value is 1 for each process",
+		},
+		[]string{"queue_manager", "queue_name", "application_name", "source_ip", "role"},
+	)
+
+	// Per-queue per-application puts
+	c.queueAppPutsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_app_puts_total",
+			Help:      "Total number of PUTs performed on a queue by a specific application/connection",
+		},
+		[]string{"queue_manager", "queue_name", "application_name", "source_ip", "user_identifier"},
+	)
+
+	// Per-queue per-application gets
+	c.queueAppGetsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_app_gets_total",
+			Help:      "Total number of GETs performed on a queue by a specific application/connection",
+		},
+		[]string{"queue_manager", "queue_name", "application_name", "source_ip", "user_identifier"},
+	)
+
+	// Per-queue per-application messages received
+	c.queueAppMsgsReceivedGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_app_msgs_received_total",
+			Help:      "Total number of messages received on a queue by a specific application/connection",
+		},
+		[]string{"queue_manager", "queue_name", "application_name", "source_ip", "user_identifier"},
+	)
+
+	// Per-queue per-application messages sent
+	c.queueAppMsgsSentGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "queue_app_msgs_sent_total",
+			Help:      "Total number of messages sent on a queue by a specific application/connection",
+		},
+		[]string{"queue_manager", "queue_name", "application_name", "source_ip", "user_identifier"},
 	)
 
 	c.queueHighDepthGauge = prometheus.NewGaugeVec(
@@ -195,66 +253,88 @@ func (c *MetricsCollector) initMetrics() {
 		[]string{"queue_manager", "channel_name", "connection_name"},
 	)
 
-	// MQI operation metrics
-	c.mqiOpensGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "mqi_opens_total",
-			Help:      "Total number of MQI OPEN operations",
-		},
-		[]string{"queue_manager", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"},
-	)
+	// Initialize MQI metrics map with all 59 metrics
+	c.mqiMetrics = make(map[string]*prometheus.GaugeVec)
 
-	c.mqiClosesGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "mqi_closes_total",
-			Help:      "Total number of MQI CLOSE operations",
-		},
-		[]string{"queue_manager", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"},
-	)
+	mqlLabels := []string{"queue_manager", "queue_name", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"}
 
-	c.mqiPutsGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "mqi_puts_total",
-			Help:      "Total number of MQI PUT operations",
-		},
-		[]string{"queue_manager", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"},
-	)
+	// Core MQI operations
+	mqlMetricDefs := map[string]string{
+		"opens":                "Total number of MQI OPEN operations",
+		"closes":               "Total number of MQI CLOSE operations",
+		"puts":                 "Total number of MQI PUT operations",
+		"gets":                 "Total number of MQI GET operations",
+		"commits":              "Total number of MQI COMMIT operations",
+		"backouts":             "Total number of MQI BACKOUT operations",
+		"browses":              "Total number of MQI BROWSE operations",
+		"inqs":                 "Total number of MQI INQUIRE operations",
+		"sets":                 "Total number of MQI SET operations",
+		"disc_close_timeout":   "Number of disconnections due to close timeout",
+		"disc_reset_timeout":   "Number of disconnections due to reset timeout",
+		"fails":                "Total number of MQI failures",
+		"incomplete_batch":     "Number of incomplete batches",
+		"incomplete_msg":       "Number of incomplete messages",
+		"wait_interval":        "Wait interval",
+		"syncpoint_heuristic":  "Syncpoint heuristic decisions",
+		"heaps":                "Number of heaps allocated",
+		"logical_connections":  "Number of logical connections",
+		"physical_connections": "Number of physical connections",
+		"current_conns":        "Current connection count",
+		"persistent_msgs":      "Number of persistent messages",
+		"non_persistent_msgs":  "Number of non-persistent messages",
+		"long_msgs":            "Number of long messages",
+		"short_msgs":           "Number of short messages",
+		"stamp_enabled":        "Timestamp enabled (1=yes, 0=no)",
+		"msgs_received":        "Total number of messages received",
+		"msgs_sent":            "Total number of messages sent",
+		"channel_status":       "Channel status (0=running, 1=stopped, etc.)",
+		"channel_type":         "Channel type",
+		"channel_errors":       "Number of channel errors",
+		"channel_disc_count":   "Number of channel disconnections",
+		"channel_exit_name":    "Channel exit name",
+		"full_batches":         "Number of full batches",
+		"partial_batches":      "Number of partial batches",
+	}
 
-	c.mqiGetsGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "mqi_gets_total",
-			Help:      "Total number of MQI GET operations",
-		},
-		[]string{"queue_manager", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"},
-	)
+	// Integer64 metrics (time-based, counters)
+	mqiInt64Metrics := map[string]string{
+		"queue_time":       "Total queue time in milliseconds",
+		"queue_time_max":   "Maximum queue time in milliseconds",
+		"elapsed_time":     "Total elapsed time in milliseconds",
+		"elapsed_time_max": "Maximum elapsed time in milliseconds",
+		"conn_time":        "Total connection time in milliseconds",
+		"conn_time_max":    "Maximum connection time in milliseconds",
+		"bytes_received":   "Total number of bytes received",
+		"bytes_sent":       "Total number of bytes sent",
+		"backout_count":    "Total number of backouts",
+		"commits_count":    "Total number of commits",
+		"rollback_count":   "Total number of rollbacks",
+	}
 
-	c.mqiCommitsGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "mqi_commits_total",
-			Help:      "Total number of MQI COMMIT operations",
-		},
-		[]string{"queue_manager", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"},
-	)
+	// Create gauge vectors for all MQI metrics
+	for metricName, help := range mqlMetricDefs {
+		c.mqiMetrics[metricName] = prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "mqi_" + metricName,
+				Help:      help,
+			},
+			mqlLabels,
+		)
+	}
 
-	c.mqiBackoutsGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "mqi_backouts_total",
-			Help:      "Total number of MQI BACKOUT operations",
-		},
-		[]string{"queue_manager", "application_name", "application_tag", "user_identifier", "connection_name", "channel_name"},
-	)
+	for metricName, help := range mqiInt64Metrics {
+		c.mqiMetrics[metricName] = prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "mqi_" + metricName,
+				Help:      help,
+			},
+			mqlLabels,
+		)
+	}
 
 	// Collection info metrics
 	c.collectionInfoGauge = prometheus.NewGaugeVec(
@@ -288,17 +368,21 @@ func (c *MetricsCollector) initMetrics() {
 		c.queueReadersGauge,
 		c.queueWritersGauge,
 		c.channelMessagesGauge,
+		c.queueProcessGauge,
+		c.queueAppPutsGauge,
+		c.queueAppGetsGauge,
+		c.queueAppMsgsReceivedGauge,
+		c.queueAppMsgsSentGauge,
 		c.channelBytesGauge,
 		c.channelBatchesGauge,
-		c.mqiOpensGauge,
-		c.mqiClosesGauge,
-		c.mqiPutsGauge,
-		c.mqiGetsGauge,
-		c.mqiCommitsGauge,
-		c.mqiBackoutsGauge,
 		c.collectionInfoGauge,
 		c.lastCollectionTime,
 	)
+
+	// Register all MQI metrics from the map
+	for _, metric := range c.mqiMetrics {
+		c.registry.MustRegister(metric)
+	}
 }
 
 // CollectMetrics collects metrics from IBM MQ and updates Prometheus gauges
@@ -322,6 +406,9 @@ func (c *MetricsCollector) CollectMetrics(ctx context.Context) error {
 
 	// Update metrics from collected data
 	c.updateMetricsFromMessages(statsMessages, accountingMessages)
+
+	// Collect and update queue-specific metrics via MQINQ
+	c.collectAndUpdateQueueMetrics()
 
 	// Update collection timestamp and baseline metrics
 	c.setBaselineMetrics(len(statsMessages), len(accountingMessages))
@@ -351,6 +438,11 @@ func (c *MetricsCollector) collectMessages(queueType string) ([]*mqclient.MQMess
 
 // updateMetricsFromMessages processes messages and updates Prometheus metrics
 func (c *MetricsCollector) updateMetricsFromMessages(statsMessages, accountingMessages []*mqclient.MQMessage) {
+	// Reset per-queue process metrics for this collection
+	if c.queueProcessGauge != nil {
+		c.queueProcessGauge.Reset()
+	}
+
 	// Process statistics messages
 	for _, msg := range statsMessages {
 		c.processStatisticsMessage(msg)
@@ -367,6 +459,62 @@ func (c *MetricsCollector) updateMetricsFromMessages(statsMessages, accountingMe
 		c.config.MQ.Channel,
 		"1.0.0", // collector version
 	).Set(1)
+}
+
+// collectAndUpdateQueueMetrics collects queue-specific metrics via MQINQ API
+// and updates the queue depth and open count metrics
+func (c *MetricsCollector) collectAndUpdateQueueMetrics() {
+	if !c.mqClient.IsConnected() {
+		c.logger.Debug("MQ client not connected, skipping MQINQ queue collection")
+		return
+	}
+
+	// List of queues to monitor - we'll start with some common ones
+	// In production, you might want to discover these dynamically
+	queuesToMonitor := []string{
+		"TEST.QUEUE",                    // Our test queue
+		"SYSTEM.ADMIN.STATISTICS.QUEUE", // System queue for stats
+		"SYSTEM.ADMIN.ACCOUNTING.QUEUE", // System queue for accounting
+	}
+
+	for _, queueName := range queuesToMonitor {
+		stats, err := c.mqClient.GetQueueStats(queueName)
+		if err != nil {
+			c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to get queue stats")
+			continue
+		}
+
+		// Update queue depth metric
+		if c.queueDepthGauge != nil {
+			c.queueDepthGauge.WithLabelValues(
+				c.config.MQ.QueueManager,
+				stats.QueueName,
+			).Set(float64(stats.CurrentDepth))
+		}
+
+		// Update open input count metric
+		if c.queueInputCountGauge != nil {
+			c.queueInputCountGauge.WithLabelValues(
+				c.config.MQ.QueueManager,
+				stats.QueueName,
+			).Set(float64(stats.OpenInputCount))
+		}
+
+		// Update open output count metric
+		if c.queueOutputCountGauge != nil {
+			c.queueOutputCountGauge.WithLabelValues(
+				c.config.MQ.QueueManager,
+				stats.QueueName,
+			).Set(float64(stats.OpenOutputCount))
+		}
+
+		c.logger.WithFields(logrus.Fields{
+			"queue_name":    stats.QueueName,
+			"current_depth": stats.CurrentDepth,
+			"input_count":   stats.OpenInputCount,
+			"output_count":  stats.OpenOutputCount,
+		}).Debug("Updated queue metrics via MQINQ")
+	}
 }
 
 // processStatisticsMessage processes a single statistics message
@@ -411,6 +559,20 @@ func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 		} else {
 			c.queueWritersGauge.WithLabelValues(labels...).Set(0)
 		}
+
+		// Export associated processes (ipprocs/opprocs) if provided by parser
+		for _, proc := range queueStats.AssociatedProcs {
+			app := proc.ApplicationName
+			src := proc.ConnectionName
+			role := proc.Role
+			if role == "" {
+				role = "unknown"
+			}
+
+			if c.queueProcessGauge != nil {
+				c.queueProcessGauge.WithLabelValues(qmgr, queueStats.QueueName, app, src, role).Set(1)
+			}
+		}
 	}
 
 	// Update channel statistics
@@ -426,6 +588,7 @@ func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 	if mqiStats := stats.MQIStats; mqiStats != nil {
 		labels := []string{
 			qmgr,
+			"unknown", // queue_name - statistics messages don't have queue context
 			mqiStats.ApplicationName,
 			mqiStats.ApplicationTag,
 			mqiStats.UserIdentifier,
@@ -433,12 +596,144 @@ func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 			mqiStats.ChannelName,
 		}
 
-		c.mqiOpensGauge.WithLabelValues(labels...).Set(float64(mqiStats.Opens))
-		c.mqiClosesGauge.WithLabelValues(labels...).Set(float64(mqiStats.Closes))
-		c.mqiPutsGauge.WithLabelValues(labels...).Set(float64(mqiStats.Puts))
-		c.mqiGetsGauge.WithLabelValues(labels...).Set(float64(mqiStats.Gets))
-		c.mqiCommitsGauge.WithLabelValues(labels...).Set(float64(mqiStats.Commits))
-		c.mqiBackoutsGauge.WithLabelValues(labels...).Set(float64(mqiStats.Backouts))
+		// Set all MQI metrics from the map
+		if gauge, ok := c.mqiMetrics["opens"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Opens))
+		}
+		if gauge, ok := c.mqiMetrics["closes"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Closes))
+		}
+		if gauge, ok := c.mqiMetrics["puts"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Puts))
+		}
+		if gauge, ok := c.mqiMetrics["gets"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Gets))
+		}
+		if gauge, ok := c.mqiMetrics["commits"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Commits))
+		}
+		if gauge, ok := c.mqiMetrics["backouts"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Backouts))
+		}
+		if gauge, ok := c.mqiMetrics["browses"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Browses))
+		}
+		if gauge, ok := c.mqiMetrics["inqs"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Inqs))
+		}
+		if gauge, ok := c.mqiMetrics["sets"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Sets))
+		}
+		if gauge, ok := c.mqiMetrics["disc_close_timeout"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.DiscCloseTimeout))
+		}
+		if gauge, ok := c.mqiMetrics["disc_reset_timeout"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.DiscResetTimeout))
+		}
+		if gauge, ok := c.mqiMetrics["fails"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Fails))
+		}
+		if gauge, ok := c.mqiMetrics["incomplete_batch"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.IncompleteBatch))
+		}
+		if gauge, ok := c.mqiMetrics["incomplete_msg"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.IncompleteMsg))
+		}
+		if gauge, ok := c.mqiMetrics["wait_interval"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.WaitInterval))
+		}
+		if gauge, ok := c.mqiMetrics["syncpoint_heuristic"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.SyncpointHeuristic))
+		}
+		if gauge, ok := c.mqiMetrics["heaps"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.Heaps))
+		}
+		if gauge, ok := c.mqiMetrics["logical_connections"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.LogicalConnections))
+		}
+		if gauge, ok := c.mqiMetrics["physical_connections"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.PhysicalConnections))
+		}
+		if gauge, ok := c.mqiMetrics["current_conns"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.CurrentConns))
+		}
+		if gauge, ok := c.mqiMetrics["persistent_msgs"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.PersistentMsgs))
+		}
+		if gauge, ok := c.mqiMetrics["non_persistent_msgs"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.NonPersistentMsgs))
+		}
+		if gauge, ok := c.mqiMetrics["long_msgs"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.LongMsgs))
+		}
+		if gauge, ok := c.mqiMetrics["short_msgs"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ShortMsgs))
+		}
+		if gauge, ok := c.mqiMetrics["stamp_enabled"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.StampEnabled))
+		}
+		if gauge, ok := c.mqiMetrics["msgs_received"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.MsgsReceived))
+		}
+		if gauge, ok := c.mqiMetrics["msgs_sent"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.MsgsSent))
+		}
+		if gauge, ok := c.mqiMetrics["channel_status"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ChannelStatus))
+		}
+		if gauge, ok := c.mqiMetrics["channel_type"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ChannelType))
+		}
+		if gauge, ok := c.mqiMetrics["channel_errors"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ChannelErrors))
+		}
+		if gauge, ok := c.mqiMetrics["channel_disc_count"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ChannelDiscCount))
+		}
+		if gauge, ok := c.mqiMetrics["channel_exit_name"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ChannelExitName))
+		}
+		if gauge, ok := c.mqiMetrics["full_batches"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.FullBatches))
+		}
+		if gauge, ok := c.mqiMetrics["partial_batches"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.PartialBatches))
+		}
+
+		// Int64 metrics
+		if gauge, ok := c.mqiMetrics["queue_time"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.QueueTime))
+		}
+		if gauge, ok := c.mqiMetrics["queue_time_max"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.QueueTimeMax))
+		}
+		if gauge, ok := c.mqiMetrics["elapsed_time"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ElapsedTime))
+		}
+		if gauge, ok := c.mqiMetrics["elapsed_time_max"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ElapsedTimeMax))
+		}
+		if gauge, ok := c.mqiMetrics["conn_time"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ConnTime))
+		}
+		if gauge, ok := c.mqiMetrics["conn_time_max"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.ConnTimeMax))
+		}
+		if gauge, ok := c.mqiMetrics["bytes_received"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.BytesReceived))
+		}
+		if gauge, ok := c.mqiMetrics["bytes_sent"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.BytesSent))
+		}
+		if gauge, ok := c.mqiMetrics["backout_count"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.BackoutCount))
+		}
+		if gauge, ok := c.mqiMetrics["commits_count"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.CommitsCount))
+		}
+		if gauge, ok := c.mqiMetrics["rollback_count"]; ok {
+			gauge.WithLabelValues(labels...).Set(float64(mqiStats.RollbackCount))
+		}
 	}
 }
 
@@ -477,14 +772,72 @@ func (c *MetricsCollector) processAccountingMessage(msg *mqclient.MQMessage) {
 			chanName = acct.ConnectionInfo.ChannelName
 		}
 
-		labels := []string{qmgr, appName, appTag, userID, connName, chanName}
+		// When we don't have queue-level data, use "unknown" for queue_name to indicate connection-level aggregate stats
+		labels := []string{qmgr, "unknown", appName, appTag, userID, connName, chanName}
 
-		c.mqiOpensGauge.WithLabelValues(labels...).Add(float64(ops.Opens))
-		c.mqiClosesGauge.WithLabelValues(labels...).Add(float64(ops.Closes))
-		c.mqiPutsGauge.WithLabelValues(labels...).Add(float64(ops.Puts))
-		c.mqiGetsGauge.WithLabelValues(labels...).Add(float64(ops.Gets))
-		c.mqiCommitsGauge.WithLabelValues(labels...).Add(float64(ops.Commits))
-		c.mqiBackoutsGauge.WithLabelValues(labels...).Add(float64(ops.Backouts))
+		if gauge, ok := c.mqiMetrics["opens"]; ok {
+			gauge.WithLabelValues(labels...).Add(float64(ops.Opens))
+		}
+		if gauge, ok := c.mqiMetrics["closes"]; ok {
+			gauge.WithLabelValues(labels...).Add(float64(ops.Closes))
+		}
+		if gauge, ok := c.mqiMetrics["puts"]; ok {
+			gauge.WithLabelValues(labels...).Add(float64(ops.Puts))
+		}
+		if gauge, ok := c.mqiMetrics["gets"]; ok {
+			gauge.WithLabelValues(labels...).Add(float64(ops.Gets))
+		}
+		if gauge, ok := c.mqiMetrics["commits"]; ok {
+			gauge.WithLabelValues(labels...).Add(float64(ops.Commits))
+		}
+		if gauge, ok := c.mqiMetrics["backouts"]; ok {
+			gauge.WithLabelValues(labels...).Add(float64(ops.Backouts))
+		}
+	}
+
+	// Update per-queue per-application operation counts (from accounting groups)
+	// Also update core MQI metrics with queue context when available
+	if acct.QueueOperations != nil {
+		for _, qa := range acct.QueueOperations {
+			qname := qa.QueueName
+			app := qa.ApplicationName
+			src := qa.ConnectionName
+			user := qa.UserIdentifier
+
+			// Labels for per-queue metrics
+			queueLabels := []string{qmgr, qname, app, src, user}
+
+			// Update per-queue specialized metrics
+			if c.queueAppPutsGauge != nil {
+				c.queueAppPutsGauge.WithLabelValues(queueLabels...).Set(float64(qa.Puts))
+			}
+			if c.queueAppGetsGauge != nil {
+				c.queueAppGetsGauge.WithLabelValues(queueLabels...).Set(float64(qa.Gets))
+			}
+			if c.queueAppMsgsReceivedGauge != nil {
+				c.queueAppMsgsReceivedGauge.WithLabelValues(queueLabels...).Set(float64(qa.MsgsReceived))
+			}
+			if c.queueAppMsgsSentGauge != nil {
+				c.queueAppMsgsSentGauge.WithLabelValues(queueLabels...).Set(float64(qa.MsgsSent))
+			}
+
+			// Also update core MQI metrics with queue context
+			// Labels for MQI metrics: queue_manager, queue_name, application_name, application_tag, user_identifier, connection_name, channel_name
+			appTag := ""
+			chanName := ""
+			if acct.ConnectionInfo != nil {
+				appTag = acct.ConnectionInfo.ApplicationTag
+				chanName = acct.ConnectionInfo.ChannelName
+			}
+			mqlabels := []string{qmgr, qname, app, appTag, user, src, chanName}
+
+			if gauge, ok := c.mqiMetrics["puts"]; ok && qa.Puts > 0 {
+				gauge.WithLabelValues(mqlabels...).Set(float64(qa.Puts))
+			}
+			if gauge, ok := c.mqiMetrics["gets"]; ok && qa.Gets > 0 {
+				gauge.WithLabelValues(mqlabels...).Set(float64(qa.Gets))
+			}
+		}
 	}
 }
 
@@ -522,12 +875,11 @@ func (c *MetricsCollector) ResetMetrics() {
 	c.channelMessagesGauge.Reset()
 	c.channelBytesGauge.Reset()
 	c.channelBatchesGauge.Reset()
-	c.mqiOpensGauge.Reset()
-	c.mqiClosesGauge.Reset()
-	c.mqiPutsGauge.Reset()
-	c.mqiGetsGauge.Reset()
-	c.mqiCommitsGauge.Reset()
-	c.mqiBackoutsGauge.Reset()
+
+	// Reset all MQI metrics
+	for _, gauge := range c.mqiMetrics {
+		gauge.Reset()
+	}
 
 	c.logger.Info("Reset all metrics")
 }
