@@ -549,6 +549,7 @@ func (c *MetricsCollector) collectAndUpdateQueueMetrics() {
 
 // collectAndUpdateHandleMetrics collects handle (application/process) details for monitored queues
 // Similar to: DIS QS(queue_name) TYPE(HANDLE) ALL
+// Combines MQINQ handle counts with parsed statistics process data
 func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 	if !c.mqClient.IsConnected() {
 		c.logger.Debug("MQ client not connected, skipping handle collection")
@@ -624,6 +625,55 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 	}
 }
 
+// updateHandleMetricsFromStatistics enriches handle metrics with actual application details from statistics data
+// This populates handle information with real reader/writer process data
+func (c *MetricsCollector) updateHandleMetricsFromStatistics(stats *pcf.StatisticsData) {
+	if stats.QueueStats == nil {
+		return
+	}
+
+	qmgr := stats.QueueManager
+	if qmgr == "" {
+		qmgr = c.config.MQ.QueueManager
+	}
+
+	queueName := stats.QueueStats.QueueName
+
+	// Use the associated processes from statistics as actual handle information
+	// These represent real readers (input) and writers (output) detected by IBM MQ
+	for _, proc := range stats.QueueStats.AssociatedProcs {
+		if c.queueHandleDetailsGauge == nil {
+			continue
+		}
+
+		// Determine handle type based on role from statistics
+		openMode := "Unknown"
+		if proc.Role == "input" {
+			openMode = "Input"
+		} else if proc.Role == "output" {
+			openMode = "Output"
+		}
+
+		// Export actual process details from statistics
+		// This shows real applications (readers/writers) with their connection info
+		c.queueHandleDetailsGauge.WithLabelValues(
+			qmgr,
+			queueName,
+			proc.ApplicationName,
+			proc.UserIdentifier,
+			openMode,
+			"Open", // Process detected by statistics is active
+		).Set(1)
+
+		c.logger.WithFields(logrus.Fields{
+			"queue_name": queueName,
+			"app_name":   proc.ApplicationName,
+			"user":       proc.UserIdentifier,
+			"role":       proc.Role,
+		}).Debug("Updated handle details from statistics process info")
+	}
+}
+
 // processStatisticsMessage processes a single statistics message
 func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 	data, err := c.pcfParser.ParseMessage(msg.Data, "statistics")
@@ -680,6 +730,9 @@ func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 				c.queueProcessGauge.WithLabelValues(qmgr, queueStats.QueueName, app, src, role).Set(1)
 			}
 		}
+
+		// Update handle metrics with actual process data from statistics
+		c.updateHandleMetricsFromStatistics(stats)
 	}
 
 	// Update channel statistics
