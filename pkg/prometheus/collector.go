@@ -3,6 +3,7 @@ package prometheus
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -611,7 +612,51 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 			"high_water_mark": queueInfo.HighQueueDepth,
 		}).Info("Queue status details")
 
-		// Get handles for this queue
+		// Try to get detailed handle information via PCF
+		// This provides data equivalent to: DIS QS(queue_name) TYPE(HANDLE) ALL
+		pcfHandles, err := c.mqClient.GetQueueHandleDetailsByPCF(queueName)
+		if err != nil {
+			c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to get handle details via PCF")
+		} else if len(pcfHandles) > 0 {
+			c.logger.WithFields(logrus.Fields{
+				"queue_name":   queueName,
+				"handle_count": len(pcfHandles),
+			}).Info("Retrieved handle details from PCF")
+
+			// Update metrics with detailed handle information
+			for _, handle := range pcfHandles {
+				if strings.HasPrefix(strings.ToUpper(handle.OpenMode), "INPUT") {
+					// Input handle
+					if c.queueInputCountGauge != nil {
+						c.queueInputCountGauge.WithLabelValues(
+							c.config.MQ.QueueManager,
+							queueName,
+							handle.UserIdentifier,
+							fmt.Sprintf("%d", handle.ProcessID),
+							handle.ChannelName,
+							handle.ApplicationTag,
+							handle.ConnectionName,
+						).Set(1)
+					}
+				} else if strings.HasPrefix(strings.ToUpper(handle.OpenMode), "OUTPUT") || strings.ToUpper(handle.OpenMode) == "YES" {
+					// Output handle
+					if c.queueOutputCountGauge != nil {
+						c.queueOutputCountGauge.WithLabelValues(
+							c.config.MQ.QueueManager,
+							queueName,
+							handle.UserIdentifier,
+							fmt.Sprintf("%d", handle.ProcessID),
+							handle.ChannelName,
+							handle.ApplicationTag,
+							handle.ConnectionName,
+						).Set(1)
+					}
+				}
+			}
+			return
+		}
+
+		// Fallback: Get handles for this queue (count-based)
 		handles, err := c.mqClient.GetQueueHandles(queueName)
 		if err != nil {
 			c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to get queue handles")
@@ -619,7 +664,35 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 		}
 
 		if len(handles) == 0 {
-			c.logger.WithField("queue_name", queueName).Debug("No open handles on queue")
+			// No detailed PCF data available, populate with counts from MQINQ
+			// This is a fallback when PCF is not available
+			if queueInfo.OpenInputCount > 0 && c.queueInputCountGauge != nil {
+				for i := int32(0); i < queueInfo.OpenInputCount; i++ {
+					c.queueInputCountGauge.WithLabelValues(
+						c.config.MQ.QueueManager,
+						queueName,
+						"", // userid - not available from MQINQ
+						"", // pid - not available from MQINQ
+						"", // channel - not available from MQINQ
+						"", // appltag - not available from MQINQ
+						"", // conname - not available from MQINQ
+					).Set(1)
+				}
+			}
+
+			if queueInfo.OpenOutputCount > 0 && c.queueOutputCountGauge != nil {
+				for i := int32(0); i < queueInfo.OpenOutputCount; i++ {
+					c.queueOutputCountGauge.WithLabelValues(
+						c.config.MQ.QueueManager,
+						queueName,
+						"", // userid - not available from MQINQ
+						"", // pid - not available from MQINQ
+						"", // channel - not available from MQINQ
+						"", // appltag - not available from MQINQ
+						"", // conname - not available from MQINQ
+					).Set(1)
+				}
+			}
 			continue
 		}
 
@@ -650,14 +723,49 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 			).Set(float64(outputCount))
 		}
 
-		// Log handle details for debugging
-		if queueInfo.OpenInputCount > 0 || queueInfo.OpenOutputCount > 0 {
+		// Populate detailed handle metrics for INPUT handles from MQINQ
+		// Note: Individual handle details (userid, pid, channel, appltag, conname) come from statistics messages
+		// For now, we create metric entries with available data from MQINQ counts
+		if queueInfo.OpenInputCount > 0 && c.queueInputCountGauge != nil {
+			for i := int32(0); i < queueInfo.OpenInputCount; i++ {
+				// Create a metric entry for each open input handle
+				// Details like userid, pid, etc. will be populated when statistics messages include PROC data
+				c.queueInputCountGauge.WithLabelValues(
+					c.config.MQ.QueueManager,
+					queueName,
+					"", // userid - from statistics PROC data
+					"", // pid - from statistics PROC data
+					"", // channel - from statistics PROC data
+					"", // appltag - from statistics PROC data
+					"", // conname - from statistics PROC data
+				).Set(1)
+			}
 			c.logger.WithFields(logrus.Fields{
-				"queue_name":     queueName,
-				"input_handles":  queueInfo.OpenInputCount,
-				"output_handles": queueInfo.OpenOutputCount,
-				"note":           "Detailed handle info (userid, pid, channel, appltag, conname) comes from statistics messages with PROC data",
-			}).Info("Queue handle status from MQINQ")
+				"queue_name":         queueName,
+				"input_handle_count": queueInfo.OpenInputCount,
+				"source":             "MQINQ",
+			}).Info("Populated INPUT handle metrics")
+		}
+
+		// Populate detailed handle metrics for OUTPUT handles from MQINQ
+		if queueInfo.OpenOutputCount > 0 && c.queueOutputCountGauge != nil {
+			for i := int32(0); i < queueInfo.OpenOutputCount; i++ {
+				// Create a metric entry for each open output handle
+				c.queueOutputCountGauge.WithLabelValues(
+					c.config.MQ.QueueManager,
+					queueName,
+					"", // userid - from statistics PROC data
+					"", // pid - from statistics PROC data
+					"", // channel - from statistics PROC data
+					"", // appltag - from statistics PROC data
+					"", // conname - from statistics PROC data
+				).Set(1)
+			}
+			c.logger.WithFields(logrus.Fields{
+				"queue_name":          queueName,
+				"output_handle_count": queueInfo.OpenOutputCount,
+				"source":              "MQINQ",
+			}).Info("Populated OUTPUT handle metrics")
 		}
 
 		// Update handle details metrics

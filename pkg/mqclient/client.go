@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aksdevs/ibmmq-go-stat-otel/pkg/config"
+	"github.com/aksdevs/ibmmq-go-stat-otel/pkg/pcf"
 	ibmmq "github.com/ibm-messaging/mq-golang/v5/ibmmq"
 	"github.com/sirupsen/logrus"
 )
@@ -390,6 +391,102 @@ func (c *MQClient) GetQueueHandles(queueName string) ([]*HandleInfo, error) {
 	// Note: Detailed handle information (PID, UserID, Channel, ConnectionName, ApplicationTag)
 	// is obtained from queue statistics messages that include PROC data.
 	// This function provides counts via MQINQ as a supplement.
+
+	return handles, nil
+}
+
+// GetQueueHandleDetailsByPCF retrieves detailed handle information using PCF inquiry
+// Sends a request to SYSTEM.ADMIN.COMMAND.QUEUE to get queue status with handle type
+// Returns handle details like USERID, PID, CHANNEL, APPLTAG, CONNAME
+func (c *MQClient) GetQueueHandleDetailsByPCF(queueName string) ([]*HandleInfo, error) {
+	if !c.connected {
+		return nil, fmt.Errorf("not connected to IBM MQ")
+	}
+
+	handles := make([]*HandleInfo, 0)
+
+	// Create inquiry handler
+	handler := pcf.NewInquiryHandler(c.logger)
+
+	// Build PCF command to inquire queue status with HANDLE type
+	cmdMsg := handler.BuildInquireQueueStatusCmd(queueName)
+
+	// Open command queue
+	od := ibmmq.NewMQOD()
+	od.ObjectName = "SYSTEM.ADMIN.COMMAND.QUEUE"
+	od.ObjectType = ibmmq.MQOT_Q
+
+	cmdQueue, err := c.qmgr.Open(od, ibmmq.MQOO_OUTPUT)
+	if err != nil {
+		c.logger.WithError(err).WithField("queue_name", queueName).
+			Debug("Failed to open command queue - handle inquiry unavailable")
+		return handles, nil // Not an error - this feature is optional
+	}
+	defer cmdQueue.Close(0)
+
+	// Create message descriptor for command
+	md := ibmmq.NewMQMD()
+	md.Format = ibmmq.MQFMT_ADMIN
+
+	// Create put message options
+	pmo := ibmmq.NewMQPMO()
+	pmo.Options = ibmmq.MQPMO_NONE
+
+	// Send command
+	err = cmdQueue.Put(md, pmo, cmdMsg)
+	if err != nil {
+		c.logger.WithError(err).Debug("Failed to send PCF inquiry command")
+		return handles, nil
+	}
+
+	c.logger.WithField("queue_name", queueName).Debug("Sent PCF INQUIRE_QUEUE_STATUS command")
+
+	// Open response queue
+	odResp := ibmmq.NewMQOD()
+	odResp.ObjectName = "SYSTEM.ADMIN.COMMAND.RESPONSE.QUEUE"
+	odResp.ObjectType = ibmmq.MQOT_Q
+
+	respQueue, err := c.qmgr.Open(odResp, ibmmq.MQOO_INPUT_AS_Q_DEF)
+	if err != nil {
+		c.logger.WithError(err).Debug("Failed to open response queue")
+		return handles, nil
+	}
+	defer respQueue.Close(0)
+
+	// Read response with timeout
+	mdResp := ibmmq.NewMQMD()
+	gmo := ibmmq.NewMQGMO()
+	gmo.Options = ibmmq.MQGMO_WAIT
+	gmo.WaitInterval = 5000 // 5 seconds
+
+	respData := make([]byte, 16384)
+
+	datalen, err := respQueue.Get(mdResp, gmo, respData)
+	if err != nil {
+		c.logger.WithError(err).Debug("Failed to read PCF response")
+		return handles, nil
+	}
+
+	// Parse response
+	responseHandles := handler.ParseQueueStatusResponse(respData[:datalen])
+
+	// Convert to HandleInfo structures
+	for _, h := range responseHandles {
+		handle := &HandleInfo{
+			QueueName:      h.QueueName,
+			ApplicationTag: h.ApplicationTag,
+			ChannelName:    h.ChannelName,
+			ConnectionName: h.ConnectionName,
+			UserIdentifier: h.UserID,
+			ProcessID:      h.ProcessID,
+		}
+		handles = append(handles, handle)
+	}
+
+	c.logger.WithFields(map[string]interface{}{
+		"queue_name":    queueName,
+		"handles_found": len(handles),
+	}).Info("Retrieved queue handles via PCF inquiry")
 
 	return handles, nil
 }
