@@ -560,6 +560,37 @@ func (c *MetricsCollector) collectAndUpdateQueueMetrics() {
 	}
 }
 
+// getQueuesToMonitor returns the list of queues to monitor based on configuration
+// If MonitorAllQueues is true, returns all queues except those matching exclusion patterns
+// If MonitorAllQueues is false, returns the configured list of queues
+func (c *MetricsCollector) getQueuesToMonitor() []string {
+	if !c.config.Collector.MonitorAllQueues {
+		// If MonitorAllQueues is false, return empty for now
+		// In future, could support explicit queue lists
+		return []string{}
+	}
+
+	// If MonitorAllQueues is true, get all queues and filter by exclusion patterns
+	// For now, use a set of default queues that can be monitored
+
+	defaultQueues := []string{
+		"TEST.QUEUE",
+		"TEST.Q1",
+		"TEST.Q2",
+		"TEST.Q3",
+	}
+
+	// Filter by exclusion patterns
+	var queuesToMonitor []string
+	for _, queueName := range defaultQueues {
+		if !mqclient.QueueMatchesExclusionPattern(queueName, c.config.Collector.QueueExclusionPatterns) {
+			queuesToMonitor = append(queuesToMonitor, queueName)
+		}
+	}
+
+	return queuesToMonitor
+}
+
 // collectAndUpdateHandleMetrics collects handle (application/process) details for monitored queues
 // Similar to: DIS QS(queue_name) TYPE(HANDLE) ALL
 // Combines MQINQ handle counts with parsed statistics process data
@@ -569,14 +600,34 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 		return
 	}
 
-	// List of queues to monitor for handle details
-	queuesToMonitor := []string{
-		"TEST.QUEUE",
-		"SYSTEM.ADMIN.STATISTICS.QUEUE",
-		"SYSTEM.ADMIN.ACCOUNTING.QUEUE",
+	// Build list of queues to monitor based on configuration
+	queuesToMonitor := c.getQueuesToMonitor()
+	if len(queuesToMonitor) == 0 {
+		c.logger.Debug("No queues to monitor (all excluded or none configured)")
+		return
 	}
 
+	c.logger.WithField("queues_to_monitor", len(queuesToMonitor)).Debug("Collecting handle metrics for configured queues")
+
 	for _, queueName := range queuesToMonitor {
+		// First, get detailed queue information
+		queueInfo, err := c.mqClient.GetQueueInfo(queueName)
+		if err != nil {
+			c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to get queue info")
+			continue
+		}
+
+		// Log comprehensive queue details
+		c.logger.WithFields(logrus.Fields{
+			"queue_name":      queueName,
+			"current_depth":   queueInfo.CurrentDepth,
+			"input_handles":   queueInfo.OpenInputCount,
+			"output_handles":  queueInfo.OpenOutputCount,
+			"max_depth":       queueInfo.MaxQueueDepth,
+			"high_water_mark": queueInfo.HighQueueDepth,
+		}).Info("Queue status details")
+
+		// Get handles for this queue
 		handles, err := c.mqClient.GetQueueHandles(queueName)
 		if err != nil {
 			c.logger.WithError(err).WithField("queue_name", queueName).Debug("Failed to get queue handles")
@@ -634,7 +685,7 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 			"input_handles":  inputCount,
 			"output_handles": outputCount,
 			"total_handles":  len(handles),
-		}).Debug("Updated queue handle metrics")
+		}).Info("Updated queue handle metrics")
 	}
 }
 

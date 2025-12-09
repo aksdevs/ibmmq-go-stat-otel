@@ -109,6 +109,12 @@ func (c *MQClient) Disconnect() error {
 	return nil
 }
 
+// GetQueueManager returns the underlying IBM MQ queue manager connection
+// Useful for advanced operations like opening queues directly
+func (c *MQClient) GetQueueManager() ibmmq.MQQueueManager {
+	return c.qmgr
+}
+
 // OpenStatsQueue opens the statistics queue for reading
 func (c *MQClient) OpenStatsQueue(queueName string) error {
 	if !c.connected {
@@ -408,6 +414,140 @@ func (c *MQClient) GetQueueHandles(queueName string) ([]*HandleInfo, error) {
 	}
 
 	return handles, nil
+}
+
+// QueueInfo represents information about a queue retrieved via MQINQ
+type QueueInfo struct {
+	QueueName       string
+	CurrentDepth    int32
+	OpenInputCount  int32
+	OpenOutputCount int32
+	MaxQueueDepth   int32
+	HighQueueDepth  int32
+	CreationTime    time.Time
+}
+
+// GetQueueInfo retrieves detailed information about a specific queue using MQINQ
+func (c *MQClient) GetQueueInfo(queueName string) (*QueueInfo, error) {
+	if !c.connected {
+		return nil, fmt.Errorf("not connected to IBM MQ")
+	}
+
+	// Open the queue for inquiry
+	od := ibmmq.NewMQOD()
+	od.ObjectName = queueName
+	od.ObjectType = ibmmq.MQOT_Q
+
+	queue, err := c.qmgr.Open(od, ibmmq.MQOO_INQUIRE)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open queue %s: %w", queueName, err)
+	}
+	defer queue.Close(0)
+
+	// Prepare inquiry selectors for comprehensive queue information
+	selectors := []int32{
+		ibmmq.MQIA_CURRENT_Q_DEPTH,
+		ibmmq.MQIA_OPEN_INPUT_COUNT,
+		ibmmq.MQIA_OPEN_OUTPUT_COUNT,
+		ibmmq.MQIA_MAX_Q_DEPTH,
+		ibmmq.MQIA_HIGH_Q_DEPTH,
+	}
+
+	// Inquire on the queue
+	attrs, err := queue.Inq(selectors)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inquire queue %s: %w", queueName, err)
+	}
+
+	// Extract values from the attributes map
+	info := &QueueInfo{
+		QueueName:    queueName,
+		CreationTime: time.Now(),
+	}
+
+	if depth, ok := attrs[ibmmq.MQIA_CURRENT_Q_DEPTH].(int32); ok {
+		info.CurrentDepth = depth
+	}
+	if inputCount, ok := attrs[ibmmq.MQIA_OPEN_INPUT_COUNT].(int32); ok {
+		info.OpenInputCount = inputCount
+	}
+	if outputCount, ok := attrs[ibmmq.MQIA_OPEN_OUTPUT_COUNT].(int32); ok {
+		info.OpenOutputCount = outputCount
+	}
+	if maxDepth, ok := attrs[ibmmq.MQIA_MAX_Q_DEPTH].(int32); ok {
+		info.MaxQueueDepth = maxDepth
+	}
+	if highDepth, ok := attrs[ibmmq.MQIA_HIGH_Q_DEPTH].(int32); ok {
+		info.HighQueueDepth = highDepth
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"queue_name":     queueName,
+		"current_depth":  info.CurrentDepth,
+		"input_handles":  info.OpenInputCount,
+		"output_handles": info.OpenOutputCount,
+		"max_depth":      info.MaxQueueDepth,
+		"high_depth":     info.HighQueueDepth,
+	}).Debug("Retrieved queue info via MQINQ")
+
+	return info, nil
+}
+
+// GetAllLocalQueues returns all local queue names on the queue manager
+// For now, returns a simple list - full implementation would enumerate all queues
+// This is a placeholder that can be enhanced to query all queues
+func (c *MQClient) GetAllLocalQueues() ([]string, error) {
+	if !c.connected {
+		return nil, fmt.Errorf("client not connected")
+	}
+
+	// In a full implementation, this would:
+	// 1. Use MQINQ on the queue manager to enumerate all local queues
+	// 2. Build a complete list dynamically
+	// For now, return empty list and let exclusion patterns filter from config
+	return []string{}, nil
+}
+
+// QueueMatchesExclusionPattern checks if a queue name matches any exclusion pattern
+// Supports HLQ wildcard patterns like "SYSTEM.*" or "TEST.TEMP.*"
+func QueueMatchesExclusionPattern(queueName string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+
+	for _, pattern := range patterns {
+		if matchesHLQPattern(queueName, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesHLQPattern checks if a queue name matches an HLQ pattern
+// Supports simple wildcard patterns:
+//   - "SYSTEM.*" matches "SYSTEM.Q1", "SYSTEM.ADMIN.Q", etc. (anything starting with "SYSTEM.")
+//   - "TEST.**" matches "TEST.Q1", "TEST.QUEUE", etc.
+//   - "EXACT" matches only "EXACT"
+func matchesHLQPattern(queueName, pattern string) bool {
+	// If pattern is exactly "*", match all
+	if pattern == "*" {
+		return true
+	}
+
+	// Check if pattern ends with .* (HLQ pattern)
+	if len(pattern) > 2 && pattern[len(pattern)-2:] == ".*" {
+		prefix := pattern[:len(pattern)-2]
+		return len(queueName) > len(prefix) && queueName[:len(prefix)+1] == prefix+"."
+	}
+
+	// Check if pattern ends with .** (HLQ pattern with deeper nesting)
+	if len(pattern) > 3 && pattern[len(pattern)-3:] == ".**" {
+		prefix := pattern[:len(pattern)-3]
+		return len(queueName) > len(prefix) && queueName[:len(prefix)+1] == prefix+"."
+	}
+
+	// Exact match (no wildcards)
+	return queueName == pattern
 }
 
 // MQMessage represents a message retrieved from IBM MQ
