@@ -478,6 +478,9 @@ func (p *Parser) parseStatistics(header *PCFHeader, parameters []*PCFParameter) 
 		Parameters: p.convertParameters(parameters),
 	}
 
+	// Log the command type being parsed
+	p.logger.WithField("command", header.Command).Info("parseStatistics: processing statistics command")
+
 	// Extract common fields
 	for _, param := range parameters {
 		switch param.Parameter {
@@ -498,11 +501,16 @@ func (p *Parser) parseStatistics(header *PCFHeader, parameters []*PCFParameter) 
 	// Parse specific statistics based on command type
 	switch header.Command {
 	case MQCMD_STATISTICS_Q:
+		p.logger.Info("parseStatistics: detected QUEUE statistics")
 		stats.QueueStats = p.parseQueueStats(parameters)
 	case MQCMD_STATISTICS_CHANNEL:
+		p.logger.Info("parseStatistics: detected CHANNEL statistics")
 		stats.ChannelStats = p.parseChannelStats(parameters)
 	case MQCMD_STATISTICS_MQI, MQCMD_Q_MGR_STATUS:
+		p.logger.Info("parseStatistics: detected MQI statistics")
 		stats.MQIStats = p.parseMQIStats(parameters)
+	default:
+		p.logger.WithField("command", header.Command).Warn("parseStatistics: unknown statistics command type")
 	}
 
 	return stats, nil
@@ -632,7 +640,14 @@ func (p *Parser) parseAccounting(header *PCFHeader, parameters []*PCFParameter) 
 // parseQueueStats extracts queue statistics from parameters
 func (p *Parser) parseQueueStats(parameters []*PCFParameter) *QueueStatistics {
 	stats := &QueueStatistics{}
-	p.logger.WithField("total_params", len(parameters)).Debug("parseQueueStats: starting extraction")
+	p.logger.WithField("total_params", len(parameters)).Info("parseQueueStats: starting extraction")
+
+	// Log all parameter IDs to diagnose what's in the stats message
+	paramIDs := make([]int32, 0, len(parameters))
+	for _, param := range parameters {
+		paramIDs = append(paramIDs, param.Parameter)
+	}
+	p.logger.WithField("parameter_ids", paramIDs).Info("parseQueueStats: all parameter IDs in statistics message")
 
 	for _, param := range parameters {
 		p.logger.WithFields(logrus.Fields{

@@ -338,8 +338,7 @@ type HandleInfo struct {
 
 // GetQueueHandles retrieves handle (application) details for a queue
 // This provides information similar to: DIS QS(queue_name) TYPE(HANDLE) ALL
-// Note: In Go MQ client, handle details are exposed through queue attributes
-// We retrieve process info by inspecting open handles and their attributes
+// Uses MQINQ to get basic handle counts and stores them for metrics
 func (c *MQClient) GetQueueHandles(queueName string) ([]*HandleInfo, error) {
 	if !c.connected {
 		return nil, fmt.Errorf("not connected to IBM MQ")
@@ -382,40 +381,15 @@ func (c *MQClient) GetQueueHandles(queueName string) ([]*HandleInfo, error) {
 		outputCount = oc
 	}
 
-	// Create handle info records for each open handle
-	// Note: The Go MQ client library does not expose individual handle details directly
-	// However, we can infer handle presence and mode from the open counts
-	totalHandles := inputCount + outputCount
-
 	c.logger.WithFields(logrus.Fields{
 		"queue_name":     queueName,
 		"input_handles":  inputCount,
 		"output_handles": outputCount,
-		"total_handles":  totalHandles,
-	}).Debug("Retrieved queue handles via MQINQ")
+	}).Debug("Retrieved queue handles via MQINQ - detailed handle info comes from statistics messages")
 
-	// For each handle count, create a representative HandleInfo record
-	// In a real implementation with direct monmqi access, you would get
-	// detailed per-handle information including PID, user, connection name
-	for i := int32(0); i < inputCount; i++ {
-		handles = append(handles, &HandleInfo{
-			QueueName:    queueName,
-			HandleState:  "Open",
-			OpenMode:     "Input",
-			CreationTime: time.Now(),
-			LastUsedTime: time.Now(),
-		})
-	}
-
-	for i := int32(0); i < outputCount; i++ {
-		handles = append(handles, &HandleInfo{
-			QueueName:    queueName,
-			HandleState:  "Open",
-			OpenMode:     "Output",
-			CreationTime: time.Now(),
-			LastUsedTime: time.Now(),
-		})
-	}
+	// Note: Detailed handle information (PID, UserID, Channel, ConnectionName, ApplicationTag)
+	// is obtained from queue statistics messages that include PROC data.
+	// This function provides counts via MQINQ as a supplement.
 
 	return handles, nil
 }

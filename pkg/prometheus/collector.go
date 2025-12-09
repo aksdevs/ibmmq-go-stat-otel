@@ -650,6 +650,16 @@ func (c *MetricsCollector) collectAndUpdateHandleMetrics() {
 			).Set(float64(outputCount))
 		}
 
+		// Log handle details for debugging
+		if queueInfo.OpenInputCount > 0 || queueInfo.OpenOutputCount > 0 {
+			c.logger.WithFields(logrus.Fields{
+				"queue_name":     queueName,
+				"input_handles":  queueInfo.OpenInputCount,
+				"output_handles": queueInfo.OpenOutputCount,
+				"note":           "Detailed handle info (userid, pid, channel, appltag, conname) comes from statistics messages with PROC data",
+			}).Info("Queue handle status from MQINQ")
+		}
+
 		// Update handle details metrics
 		for _, handle := range handles {
 			if c.queueHandleDetailsGauge != nil {
