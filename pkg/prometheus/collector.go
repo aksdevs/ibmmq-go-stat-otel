@@ -977,13 +977,15 @@ func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 func (c *MetricsCollector) processAccountingMessage(msg *mqclient.MQMessage) {
 	data, err := c.pcfParser.ParseMessage(msg.Data, "accounting")
 	if err != nil {
-		c.logger.WithError(err).Error("Failed to parse accounting message")
+		c.logger.WithError(err).Debug("Failed to parse accounting message")
 		return
 	}
 
 	acct, ok := data.(*pcf.AccountingData)
 	if !ok {
-		c.logger.Error("Invalid accounting data type")
+		// If it's not accounting data, it might be MQI-level or some other format
+		// Just debug log and return instead of error
+		c.logger.WithField("data_type", fmt.Sprintf("%T", data)).Debug("Message parsed as non-accounting data type")
 		return
 	}
 
