@@ -189,7 +189,8 @@ type QueueStatistics struct {
 // ProcInfo represents a process (input/output) associated with a queue
 type ProcInfo struct {
 	ApplicationName string `json:"application_name"`
-	ProcessID       int32  `json:"process_id"` // Operating system process ID
+	ApplicationTag  string `json:"application_tag"` // Full path like "el\bin\producer-consumer.exe"
+	ProcessID       int32  `json:"process_id"`      // Operating system process ID
 	ConnectionName  string `json:"connection_name"`
 	UserIdentifier  string `json:"user_identifier"`
 	ChannelName     string `json:"channel_name"`
@@ -670,6 +671,9 @@ func (p *Parser) parseQueueStats(parameters []*PCFParameter) *QueueStatistics {
 					case MQCA_CHANNEL_NAME:
 						proc.ChannelName = val
 						p.logger.WithField("channel", val).Info("parseQueueStats: extracted CHANNEL_NAME")
+					case MQCACF_APPL_TAG:
+						proc.ApplicationTag = val
+						p.logger.WithField("app_tag", val).Info("parseQueueStats: extracted APPL_TAG")
 					}
 				}
 

@@ -321,15 +321,19 @@ func (c *MQClient) GetQueueStats(queueName string) (*QueueStats, error) {
 // HandleInfo represents handle (application) details for a queue
 // Similar to MQSC command: DIS QS(queue_name) TYPE(HANDLE) ALL
 type HandleInfo struct {
-	ApplicationName string    `json:"application_name"`
-	ProcessID       int32     `json:"process_id"`
-	UserIdentifier  string    `json:"user_identifier"`
-	ConnectionName  string    `json:"connection_name"`
-	HandleState     string    `json:"handle_state"` // "Open", "Closing", etc.
-	OpenMode        string    `json:"open_mode"`    // "Input", "Output", "Inquire"
-	QueueName       string    `json:"queue_name"`
-	CreationTime    time.Time `json:"creation_time"`
-	LastUsedTime    time.Time `json:"last_used_time"`
+	ApplicationName   string    `json:"application_name"`
+	ApplicationTag    string    `json:"application_tag"` // Full path like "el\bin\producer-consumer.exe"
+	ProcessID         int32     `json:"process_id"`
+	UserIdentifier    string    `json:"user_identifier"`
+	ChannelName       string    `json:"channel_name"`    // MQTT connection channel
+	ConnectionName    string    `json:"connection_name"` // IP address or connection string
+	HandleState       string    `json:"handle_state"`    // "Open", "Closing", etc.
+	OpenMode          string    `json:"open_mode"`       // "Input", "Output", "Inquire"
+	QueueName         string    `json:"queue_name"`
+	CreationTime      time.Time `json:"creation_time"`
+	LastUsedTime      time.Time `json:"last_used_time"`
+	InputHandleCount  int32     `json:"input_handle_count"`  // Count of Input handles
+	OutputHandleCount int32     `json:"output_handle_count"` // Count of Output handles
 }
 
 // GetQueueHandles retrieves handle (application) details for a queue

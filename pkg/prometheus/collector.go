@@ -47,7 +47,7 @@ type MetricsCollector struct {
 	queueAppMsgsReceivedGauge *prometheus.GaugeVec
 	queueAppMsgsSentGauge     *prometheus.GaugeVec
 
-	// Handle-level (application/process) metrics
+	// Handle-level metrics (application/process) metrics
 	queueHandleCountGauge   *prometheus.GaugeVec // Total handles open on queue
 	queueHandleDetailsGauge *prometheus.GaugeVec // Per-handle details (app name, user, mode)
 	queueProcessDetailGauge *prometheus.GaugeVec // Process details with PID (app name, PID, user, role)
@@ -192,9 +192,9 @@ func (c *MetricsCollector) initMetrics() {
 			Namespace: namespace,
 			Subsystem: subsystem,
 			Name:      "queue_input_handles",
-			Help:      "Number of input handles open for IBM MQ queue",
+			Help:      "Input handles open on a queue with connection details (userid, pid, channel, appltag, conname)",
 		},
-		[]string{"queue_manager", "queue_name"},
+		[]string{"queue_manager", "queue_name", "userid", "pid", "channel", "appltag", "conname"},
 	)
 
 	c.queueOutputCountGauge = prometheus.NewGaugeVec(
@@ -202,9 +202,9 @@ func (c *MetricsCollector) initMetrics() {
 			Namespace: namespace,
 			Subsystem: subsystem,
 			Name:      "queue_output_handles",
-			Help:      "Number of output handles open for IBM MQ queue",
+			Help:      "Output handles open on a queue with connection details (userid, pid, channel, appltag, conname)",
 		},
-		[]string{"queue_manager", "queue_name"},
+		[]string{"queue_manager", "queue_name", "userid", "pid", "channel", "appltag", "conname"},
 	)
 
 	c.queueReadersGauge = prometheus.NewGaugeVec(
@@ -535,22 +535,6 @@ func (c *MetricsCollector) collectAndUpdateQueueMetrics() {
 			).Set(float64(stats.CurrentDepth))
 		}
 
-		// Update open input count metric
-		if c.queueInputCountGauge != nil {
-			c.queueInputCountGauge.WithLabelValues(
-				c.config.MQ.QueueManager,
-				stats.QueueName,
-			).Set(float64(stats.OpenInputCount))
-		}
-
-		// Update open output count metric
-		if c.queueOutputCountGauge != nil {
-			c.queueOutputCountGauge.WithLabelValues(
-				c.config.MQ.QueueManager,
-				stats.QueueName,
-			).Set(float64(stats.OpenOutputCount))
-		}
-
 		c.logger.WithFields(logrus.Fields{
 			"queue_name":    stats.QueueName,
 			"current_depth": stats.CurrentDepth,
@@ -740,6 +724,30 @@ func (c *MetricsCollector) updateHandleMetricsFromStatistics(stats *pcf.Statisti
 			).Set(1)
 		}
 
+		// Export detailed handle metrics with connection information
+		pidStr := fmt.Sprintf("%d", proc.ProcessID)
+		if proc.Role == "input" && c.queueInputCountGauge != nil {
+			c.queueInputCountGauge.WithLabelValues(
+				qmgr,
+				queueName,
+				proc.UserIdentifier,
+				pidStr,
+				proc.ChannelName,
+				proc.ApplicationTag,
+				proc.ConnectionName,
+			).Set(1)
+		} else if proc.Role == "output" && c.queueOutputCountGauge != nil {
+			c.queueOutputCountGauge.WithLabelValues(
+				qmgr,
+				queueName,
+				proc.UserIdentifier,
+				pidStr,
+				proc.ChannelName,
+				proc.ApplicationTag,
+				proc.ConnectionName,
+			).Set(1)
+		}
+
 		c.logger.WithFields(logrus.Fields{
 			"queue_name": queueName,
 			"app_name":   proc.ApplicationName,
@@ -777,8 +785,7 @@ func (c *MetricsCollector) processStatisticsMessage(msg *mqclient.MQMessage) {
 		c.queueHighDepthGauge.WithLabelValues(labels...).Set(float64(queueStats.HighDepth))
 		c.queueEnqueueGauge.WithLabelValues(labels...).Set(float64(queueStats.EnqueueCount))
 		c.queueDequeueGauge.WithLabelValues(labels...).Set(float64(queueStats.DequeueCount))
-		c.queueInputCountGauge.WithLabelValues(labels...).Set(float64(queueStats.InputCount))
-		c.queueOutputCountGauge.WithLabelValues(labels...).Set(float64(queueStats.OutputCount))
+		// Handle metrics populated from detailed statistics data in updateHandleMetricsFromStatistics()
 
 		// Set reader/writer flags
 		if queueStats.HasReaders {
